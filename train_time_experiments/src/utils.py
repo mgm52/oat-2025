@@ -13,6 +13,46 @@ loaded_models = {}
 loaded_tokenizers = {}
 
 
+def calculate_flops(model_size, num_tokens, include_backward=False):
+    """
+    Calculate approximate FLOPs for transformer operations.
+    
+    Args:
+        model_size: Number of parameters in the model
+        num_tokens: Number of tokens processed
+        include_backward: Whether to include backward pass (typically 2x forward)
+    
+    Returns:
+        Estimated number of FLOPs
+    """
+    # Basic estimate: k × d × 2, where k is tokens and d is model size
+    forward_flops = num_tokens * model_size * 2
+    
+    # Backward pass is approximately 2x the forward pass
+    if include_backward:
+        return forward_flops * 3
+    else:
+        return forward_flops
+
+def get_model_size(model):
+    """
+    Get the approximate size of a model based on its hidden dimension.
+    For a rough estimate, we use hidden_size^2 * num_layers as a proxy.
+    
+    Args:
+        model: The transformer model
+        
+    Returns:
+        Approximate model size (parameter count)
+    """
+    if hasattr(model, 'config'):
+        hidden_size = model.config.hidden_size
+        num_layers = model.config.num_hidden_layers
+        return hidden_size * hidden_size * num_layers
+    else:
+        # Fallback: count parameters
+        return sum(p.numel() for p in model.parameters())
+
 def remove_duplicates(tensor):
     # Create a dictionary to store one instance of each unique element
     seen_elements = {}

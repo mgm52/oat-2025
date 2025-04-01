@@ -13,7 +13,7 @@ from torch import nn
 from tqdm.auto import tqdm
 
 from .attacks import *
-from .utils import convert_seconds_to_time_str, get_valid_token_mask
+from .utils import convert_seconds_to_time_str, get_valid_token_mask, calculate_flops, get_model_size
 
 
 class Probe(nn.Module):
@@ -429,6 +429,12 @@ def train_online_probe(
 ):
     assert n_grad_accum == 0 or n_steps % n_grad_accum == 0
 
+    # Initialize FLOP counters
+    model_size = get_model_size(encoder.model)
+    total_flops = 0
+    probe_training_flops = 0
+    adversarial_training_flops = 0
+
     # Initialize probes and optimizers for each layer
     probes, optimizers = initialize_probes_and_optimizers(
         layers, create_probe_fn, probe_lr, device, pretrained_probes
@@ -541,6 +547,11 @@ def train_online_probe(
             pos_batch_probe_mask = probe_positive_mask[batch_perm].to(device).bool()
             neg_batch_probe_mask = probe_negative_mask[batch_perm].to(device).bool()
 
+            # Calculate tokens processed in this batch
+            pos_tokens = pos_batch_input_ids.shape[0] * pos_batch_input_ids.shape[1]
+            neg_tokens = neg_batch_input_ids.shape[0] * neg_batch_input_ids.shape[1]
+            batch_tokens = pos_tokens + neg_tokens
+
             if pos_only_choose_mask is not None:
                 pos_batch_only_choose_mask = (
                     pos_only_choose_mask[batch_perm].to(device).bool()
@@ -622,6 +633,12 @@ def train_online_probe(
 
                     # Enable model gradients on the lora adapter
                     enable_model_gradients(lora_model)
+
+                    # Track FLOPs for adversarial training
+                    pgd_tokens = pos_batch_input_ids.shape[0] * pos_batch_input_ids.shape[1] * pgd_iterations
+                    pgd_flops = calculate_flops(model_size, pgd_tokens, include_backward=True)
+                    adversarial_training_flops += pgd_flops
+                    total_flops += pgd_flops
                 else:
                     pgd_toward_loss = (
                         0  # Set to 0 when adversarial training is not used
@@ -640,6 +657,14 @@ def train_online_probe(
                     layer: pos_output.hidden_states[layer + 1] for layer in layers
                 }
 
+                # Track forward pass FLOPs
+                forward_flops = calculate_flops(model_size, pos_tokens, include_backward=False)
+                total_flops += forward_flops
+                if current_step < start_adv_training_at_step or not adversarial_training:
+                    probe_training_flops += forward_flops
+                else:
+                    adversarial_training_flops += forward_flops
+
             # Compute the positive probe losses using probe mask
             pos_loss = 0
             for layer, probe in probes.items():
@@ -653,6 +678,14 @@ def train_online_probe(
                         mask=pos_batch_probe_mask,  # Use probe mask
                     )
                     pos_loss += pos_layer_loss
+
+            # Track backward pass FLOPs for positive examples
+            backward_flops = calculate_flops(model_size, pos_tokens, include_backward=True) - forward_flops
+            total_flops += backward_flops
+            if current_step < start_adv_training_at_step or not adversarial_training:
+                probe_training_flops += backward_flops
+            else:
+                adversarial_training_flops += backward_flops
 
             # Backward pass on positive examples
             pos_loss.backward(retain_graph=True)
@@ -671,6 +704,14 @@ def train_online_probe(
                     layer: neg_output.hidden_states[layer + 1] for layer in layers
                 }
 
+                # Track forward pass FLOPs for negative examples
+                forward_flops = calculate_flops(model_size, neg_tokens, include_backward=False)
+                total_flops += forward_flops
+                if current_step < start_adv_training_at_step or not adversarial_training:
+                    probe_training_flops += forward_flops
+                else:
+                    adversarial_training_flops += forward_flops
+
             # Compute the negative probe losses using probe mask
             neg_loss = 0
             for layer, probe in probes.items():
@@ -687,6 +728,14 @@ def train_online_probe(
 
             # Backward pass on negative examples
             neg_loss.backward(retain_graph=True)
+
+            # Track backward pass FLOPs for negative examples
+            backward_flops = calculate_flops(model_size, neg_tokens, include_backward=True) - forward_flops
+            total_flops += backward_flops
+            if current_step < start_adv_training_at_step or not adversarial_training:
+                probe_training_flops += backward_flops
+            else:
+                adversarial_training_flops += backward_flops
 
             # Compute KL divergence of logits from base model logits
             with torch.no_grad():
@@ -706,6 +755,14 @@ def train_online_probe(
                 F.softmax(model_logits, dim=-1),
                 reduction="batchmean",
             )
+
+            # Track FLOPs for KL divergence computation (approximation)
+            kl_flops = calculate_flops(model_size, neg_tokens, include_backward=True)
+            total_flops += kl_flops
+            if current_step < start_adv_training_at_step or not adversarial_training:
+                probe_training_flops += kl_flops
+            else:
+                adversarial_training_flops += kl_flops
 
             # Backward pass on KL divergence
             (kl_loss / (kl_loss.detach() + 1e-8) * kl_penalty).backward()
@@ -768,6 +825,11 @@ def train_online_probe(
                     else 0
                 )
                 avg_total_loss = avg_probe_loss + avg_kl_loss
+
+                # Update info dictionary
+                info["flops"]["total"] = total_flops
+                info["flops"]["probe_training"] = probe_training_flops
+                info["flops"]["adversarial_training"] = adversarial_training_flops
 
                 log_message = (
                     f"Step: {current_step}/{n_steps}, "

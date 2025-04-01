@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 
 from .encoders import LanguageModelWrapper
 from .probe_evals import *
-from .utils import get_last_true_indices, get_valid_token_mask
+from .utils import get_last_true_indices, get_valid_token_mask, calculate_flops, get_model_size
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, project_root)
@@ -561,6 +561,10 @@ def train_attack(
     loss_over_time = [] if return_loss_over_time else None
     losses = {}
 
+    # Initialize FLOP counter
+    model_size = get_model_size(model)
+    total_attack_flops = 0
+
     # Optimize adversary to elicit attack labels
     for _ in tqdm(range(pgd_iterations), disable=not verbose):
         adv_optim.zero_grad()
@@ -576,6 +580,12 @@ def train_attack(
             probes=probes,
             probe_mask=probe_mask,  # Pass through the probe_mask
         )
+
+        # Track FLOPs for forward and backward pass
+        batch_tokens = adv_tokens.shape[0] * adv_tokens.shape[1]
+        iteration_flops = calculate_flops(model_size, batch_tokens, include_backward=True)
+        total_attack_flops += iteration_flops
+
 
         # Add L2 penalty if specified
         if l2_regularization:
@@ -601,6 +611,9 @@ def train_attack(
 
         if return_loss_over_time:
             loss_over_time.append(copy.deepcopy(losses))
+        
+    # Add FLOP count to losses
+    losses["flops"] = total_attack_flops
 
     return (loss_over_time, wrappers) if return_loss_over_time else (losses, wrappers)
 
@@ -828,6 +841,10 @@ def benchmark_obfuscated_softprompt(
 ):
     ### This function is specific to llama3
 
+    # Calculate model size for FLOP tracking
+    model_size = get_model_size(model)
+    total_eval_flops = 0
+
     # Get the tokens
     tokenizer.padding_side = "right"
     test_positive_tokens = tokenizer(
@@ -868,6 +885,10 @@ def benchmark_obfuscated_softprompt(
         initial_soft_prompt_text=initial_soft_prompt_text,
         return_adversaries=True,
     )
+
+    # Add attack FLOPs from the last loss entry
+    if loss_over_time and "flops" in loss_over_time[-1]:
+        total_eval_flops = loss_over_time[-1]["flops"]
 
     # Generate responses
     for wrapper in wrappers:
@@ -939,9 +960,9 @@ def benchmark_obfuscated_softprompt(
         prompts=edited_prompts,
         responses=results,
     )
-    percent_over_zero = sum(score > 0 for score in jailbreak_scores) / len(
+    percent_over_zero = (sum(score > 0 for score in jailbreak_scores) / len(
         jailbreak_scores
-    )
+    )) if len(jailbreak_scores) > 0 else 0
 
     # Compute probe scores
     probe_scores_dict = {}
@@ -1018,6 +1039,16 @@ def benchmark_obfuscated_softprompt(
     ]
     negative_probe_scores = [float(x) for x in probe_scores_dict["negative"]]
 
+    # Track FLOPs for generation
+    generation_tokens = sum(len(tokenizer.encode(p)) for p in modified_test_prompts[:20]) + 20 * 200  # prompts + max_new_tokens
+    generation_flops = calculate_flops(model_size, generation_tokens, include_backward=False)
+    total_eval_flops += generation_flops
+
+    # Track FLOPs for probe scoring
+    probe_tokens = sum(len(tokenizer.encode(ex)) for ex in modified_test_examples) + sum(len(tokenizer.encode(ex)) for ex in test_negative_examples)
+    probe_flops = calculate_flops(model_size, probe_tokens, include_backward=False)
+    total_eval_flops += probe_flops
+
     # Return the results
     return {
         "loss_over_time": loss_over_time,
@@ -1025,10 +1056,11 @@ def benchmark_obfuscated_softprompt(
         "all_jailbreak_scores": jailbreak_scores,
         "positive_scores": positive_probe_scores,
         "negative_scores": negative_probe_scores,
-        "avg_positive_score": sum(positive_probe_scores) / len(positive_probe_scores),
-        "avg_negative_score": sum(negative_probe_scores) / len(negative_probe_scores),
+        "avg_positive_score": (sum(positive_probe_scores) / len(positive_probe_scores)) if len(positive_probe_scores) > 0 else 0,
+        "avg_negative_score": (sum(negative_probe_scores) / len(negative_probe_scores)) if len(negative_probe_scores) > 0 else 0,
         "auc": roc_auc_score(
             [1] * len(positive_probe_scores) + [0] * len(negative_probe_scores),
             positive_probe_scores + negative_probe_scores,
         ),
+        "total_eval_flops": total_eval_flops,
     }
