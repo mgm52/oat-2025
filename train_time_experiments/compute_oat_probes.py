@@ -19,6 +19,25 @@ from src.probe_training import *
 # Local imports
 from src import *
 
+MODEL_TOKEN_IDS = {
+    "llama3": {
+        "ASSISTANT_TOKEN": 78191,
+        "USER_TOKEN": 882,
+        "NEWLINE_TOKEN": 271,
+        "TURN_START_TOKEN_ID": 128000,  # '<|begin_of_text|>' or '<|start_header_id|>'? - Using 128000 based on example. Adjust if needed.
+        "TURN_END_TOKEN_ID": 128009,  # '<|eot_id|>'
+        "HEADER_END_TOKEN_ID": 128007, # '<|end_header_id|>'
+    },
+    "gemma2": {
+        "ASSISTANT_TOKEN": 2516,  # 'model' token ID
+        "USER_TOKEN": 1645,  # 'user' token ID
+        "NEWLINE_TOKEN": 108, # '\n' token ID
+        "TURN_START_TOKEN_ID": 106, # '<start_of_turn>'
+        "TURN_END_TOKEN_ID": 107, # '<end_of_turn>'
+        # Gemma doesn't seem to have a direct equivalent to HEADER_END_TOKEN_ID in the same way Llama3 does for delimiting user/assistant roles immediately.
+        # We'll rely on the combination of TURN_START and USER/ASSISTANT tokens.
+    },
+}
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -114,66 +133,96 @@ def split_dataset(dataset, train_ratio=0.9, val_ratio=0.1, test_ratio=0.0):
     return train_set, val_set, test_set
 
 
-def is_token_after_assistant(seq_idx, token, tokens):
-    ASSISTANT_TOKEN = 78191
-    return seq_idx >= 1 and tokens[seq_idx - 1] == ASSISTANT_TOKEN
+def is_token_after_specific_token(seq_idx, token, tokens, target_token_id):
+    """Checks if the current token immediately follows the target_token_id."""
+    return seq_idx >= 1 and tokens[seq_idx - 1] == target_token_id
+
+def is_at_newline_after_specific_token(seq_idx, token, tokens, target_token_id, newline_token_id):
+    """Checks if the current token is a newline and follows the sequence <turn_start><specific_token><newline> or <header_end><newline>."""
+    # Llama3: <start_header_id> <role> <end_header_id> \n -> Check for newline after <end_header_id>
+    # Gemma2: <start_of_turn> <role> \n -> Check for newline after <role>
+    # Check Llama3 pattern: pos-2 is end_header_id and pos-3 is role
+    if 'HEADER_END_TOKEN_ID' in MODEL_TOKEN_IDS["llama3"] and \
+       target_token_id == MODEL_TOKEN_IDS["llama3"]["USER_TOKEN"] or \
+       target_token_id == MODEL_TOKEN_IDS["llama3"]["ASSISTANT_TOKEN"]:
+        if seq_idx >= 2 and tokens[seq_idx-1] == MODEL_TOKEN_IDS["llama3"]["HEADER_END_TOKEN_ID"] and token == newline_token_id:
+             # check if pos-2 is the target role
+             # Need to look further back for the actual role token before the header end
+             if seq_idx >= 3 and tokens[seq_idx-2] == target_token_id:
+                 return True # It's newline after header end, after target role
+
+    # Check Gemma2 / General pattern: pos-2 is target_token_id
+    if seq_idx >= 2 and tokens[seq_idx - 2] == target_token_id and token == newline_token_id:
+        return True
+
+    return False
 
 
-def is_at_newline_after_assistant(seq_idx, token, tokens):
-    NEWLINE_TOKEN = 271
-    ASSISTANT_TOKEN = 78191
-    return (
-        seq_idx >= 2
-        and tokens[seq_idx - 2] == ASSISTANT_TOKEN
-        and token == NEWLINE_TOKEN
-    )
+def get_token_ranges(masking_type: Literal["instruction", "generation"], model_name: str):
+    if model_name not in MODEL_TOKEN_IDS:
+        raise ValueError(f"Unknown model_name: {model_name}. Supported models: {list(MODEL_TOKEN_IDS.keys())}")
+
+    ids = MODEL_TOKEN_IDS[model_name]
+    TURN_END_TOKEN_ID = ids["TURN_END_TOKEN_ID"]
+    ASSISTANT_TOKEN_ID = ids["ASSISTANT_TOKEN"]
+    USER_TOKEN_ID = ids["USER_TOKEN"]
+    NEWLINE_TOKEN_ID = ids["NEWLINE_TOKEN"]
 
 
-def is_at_newline_after_user(seq_idx, token, tokens):
-    NEWLINE_TOKEN = 271
-    USER_TOKEN = 882
-    return seq_idx >= 2 and tokens[seq_idx - 2] == USER_TOKEN and token == NEWLINE_TOKEN
+    # Define closures that capture the correct token IDs
+    def is_at_newline_after_assistant_closure(seq_idx, token, tokens):
+        return is_at_newline_after_specific_token(seq_idx, token, tokens, ASSISTANT_TOKEN_ID, NEWLINE_TOKEN_ID)
 
+    def is_at_newline_after_user_closure(seq_idx, token, tokens):
+        return is_at_newline_after_specific_token(seq_idx, token, tokens, USER_TOKEN_ID, NEWLINE_TOKEN_ID)
 
-def is_at_token_after_newline(seq_idx, token, tokens):
-    NEWLINE_TOKEN = 271
-    return seq_idx >= 1 and tokens[seq_idx - 1] == NEWLINE_TOKEN
+    def is_token_after_assistant_closure(seq_idx, token, tokens):
+        # For Llama3, generation starts after <end_header_id>\n
+        if model_name == 'llama3':
+             # Check if current token is after the newline following the assistant header end
+             if seq_idx >= 2 and \
+                tokens[seq_idx-1] == NEWLINE_TOKEN_ID and \
+                tokens[seq_idx-2] == ids["HEADER_END_TOKEN_ID"]:
+                 # Verify that the assistant token preceded the header end
+                 if seq_idx >= 3 and tokens[seq_idx-3] == ASSISTANT_TOKEN_ID:
+                     return True
+        # For Gemma2, generation starts after <start_of_turn>model\n
+        elif model_name == 'gemma2':
+             if seq_idx >= 2 and \
+                tokens[seq_idx-1] == NEWLINE_TOKEN_ID and \
+                tokens[seq_idx-2] == ASSISTANT_TOKEN_ID:
+                 return True
+        return False # Default case
 
+    # Note: The logic for 'only_return_on_tokens_between' and 'only_choose_prompt_tokens_between'
+    # seems to target the first token *after* the newline following the role identifier.
+    # The 'only_probe_tokens_between' logic targets the entire generation/instruction section.
 
-def get_token_ranges(masking_type):
-    INSTRUCTION_START = 128000
-    INSTRUCTION_END = 128009
+    token_ranges = {
+        "only_return_on_tokens_between": [ # Region in which to enforce low KL divergence of logits
+            is_at_newline_after_assistant_closure, # Start checking *after* the newline following assistant marker
+            TURN_END_TOKEN_ID, # End of generation (if not present, range goes as far as possible)
+        ],
+        "only_choose_prompt_tokens_between": [ # Region in which to modify / generate soft prompts
+            is_at_newline_after_user_closure, # Start checking *after* the newline following user marker
+            TURN_END_TOKEN_ID,  # End of instruction
+        ]
+    }
 
     if masking_type == "generation":
-        return {
-            "only_return_on_tokens_between": [
-                is_at_newline_after_assistant,
-                INSTRUCTION_END,
-            ],
-            "only_choose_prompt_tokens_between": [
-                is_at_newline_after_user,
-                INSTRUCTION_END,
-            ],
-            "only_probe_tokens_between": [is_token_after_assistant, INSTRUCTION_END],
-        }
-
+        # Probe tokens *within* the assistant's response
+        token_ranges["only_probe_tokens_between"] = [ # Region in which to probe
+            is_token_after_assistant_closure, # Start probing from the first token of the assistant's response, including the initial newline
+            TURN_END_TOKEN_ID  # End of generation (if not present, range goes as far as possible)
+        ]
     elif masking_type == "instruction":
-        return {
-            "only_return_on_tokens_between": [
-                is_at_newline_after_assistant,
-                INSTRUCTION_END,
-            ],
-            "only_choose_prompt_tokens_between": [
-                is_at_newline_after_user,
-                INSTRUCTION_END,
-            ],
-            "only_probe_tokens_between": [
-                is_token_after_assistant,
-                is_at_token_after_newline,
-            ],
-        }
-    else:
-        raise ValueError(f"Unknown masking_type: {masking_type}")
+         # Probe tokens *within* the user's instruction
+        token_ranges["only_probe_tokens_between"] = [ # Region in which to probe
+            is_at_newline_after_user_closure, # Start probing from the first token of the user's instruction (after newline)
+            TURN_END_TOKEN_ID
+        ]
+
+    return token_ranges
 
 
 def main():
@@ -181,10 +230,12 @@ def main():
 
     args = parse_args()
     probes_folder = "./probe_weights_comp_only"
-    model_type = "llama3"
+    # Allow specifying model type via argument later if needed
+    # For now, let's keep it hardcoded for testing
+    model_type = "gemma2" # or "llama3"
     masking_type = args.masking_type
     use_lora_probes = not args.no_lora_probes
-    name = f"llama3_lora_oat_{masking_type}_{'nonlinear' if args.probe_type == 'nonlinear' else 'linear'}"
+    name = f"{model_type}_lora_oat_{masking_type}_{'nonlinear' if args.probe_type == 'nonlinear' else 'linear'}"
 
     # Load model and dataset
     if model_type == "llama3":
@@ -193,10 +244,14 @@ def main():
             "Mechanistic-Anomaly-Detection/llama3-jailbreaks"
         )
     elif model_type == "gemma2":
+        # Assuming layer 11 for Gemma 2 based on previous code
         encoder = DeepmindSparseAutoencoder.load_gemma2_sae(None, 11)
         jailbreaks_dataset = load_dataset(
             "Mechanistic-Anomaly-Detection/gemma2-jailbreaks"
         )
+    else:
+        raise ValueError(f"Unsupported model_type: {model_type}")
+
 
     forget_examples_train = sample_examples_from_datasets(
         [jailbreaks_dataset["circuit_breakers_train"]], [1.0]
@@ -222,8 +277,11 @@ def main():
     forget_examples_train, forget_examples_val, _ = split_dataset(forget_examples_train)
     retain_examples_train, retain_examples_val, _ = split_dataset(retain_examples_train)
     _, forget_examples_val_prompts, _ = split_dataset(forget_examples_train_prompts)
+    # Make sure retain validation prompts are also split if needed for eval
+    _, retain_examples_val_prompts, _ = split_dataset(retain_examples_train_prompts)
 
-    ranges = get_token_ranges(masking_type)
+
+    ranges = get_token_ranges(masking_type, model_type) # Pass model_type here
     only_return_on_tokens_between = ranges["only_return_on_tokens_between"]
     only_choose_prompt_tokens_between = ranges["only_choose_prompt_tokens_between"]
     only_probe_tokens_between = ranges["only_probe_tokens_between"]
@@ -233,7 +291,7 @@ def main():
         positive_examples=forget_examples_train,
         negative_examples=retain_examples_train,
         create_probe_fn=get_probe_creator(args.probe_type),
-        layers=[4, 8, 12, 16, 20, 24],
+        layers=[4, 8, 12, 16, 20, 24], # Adjust layers based on model if needed
         max_length=512,
         n_steps_per_logging=8,
         batch_size=2,
@@ -254,9 +312,12 @@ def main():
             "test_negative_examples": retain_examples_val,
             "test_positive_examples": forget_examples_val,
             "test_positive_prompts": forget_examples_val_prompts,
+            # Pass model-specific ranges to evaluation too
             "only_return_on_tokens_between": only_return_on_tokens_between,
             "only_choose_prompt_tokens_between": only_choose_prompt_tokens_between,
             "only_probe_tokens_between": only_probe_tokens_between,
+            # It might be useful to pass the model_type or specific token IDs here as well
+            # depending on how the evaluation function uses these ranges.
         },
     )
 
@@ -267,7 +328,11 @@ def main():
     )
 
     # Check if the model is a lora adapter, if so save it
-    lora_model.save_pretrained(os.path.join(probes_folder, f"{name}_model"))
+    if use_lora_probes and hasattr(lora_model, 'save_pretrained'):
+        lora_model.save_pretrained(os.path.join(probes_folder, f"{name}_model"))
+    elif use_lora_probes:
+         print("Warning: LoRA probes enabled but the returned model doesn't have 'save_pretrained'. Cannot save LoRA adapter.")
+
 
     # Save the info
     with open(os.path.join(probes_folder, f"{name}_info.json"), "w") as f:
