@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from peft import LoraConfig, PeftModel, get_peft_model
 from torch import nn
 from tqdm.auto import tqdm
+import wandb
 
 from .attacks import *
 from .utils import convert_seconds_to_time_str, get_valid_token_mask, calculate_flops, get_model_size
@@ -425,15 +426,98 @@ def train_online_probe(
     use_lora_adapter=True,
     run_softprompt_eval_every=128,
     softprompt_evals_data={},
+    checkpoint_dir=None,
+    checkpoint_every=500,  # Save checkpoints every 500 steps by default
     **kwargs,
 ):
     assert n_grad_accum == 0 or n_steps % n_grad_accum == 0
+
+    # Get model name from encoder
+    if hasattr(encoder, 'model_name'):
+        model_name = encoder.model_name
+    elif hasattr(encoder.model, 'config'):
+        model_name = encoder.model.config._name_or_path
+    else:
+        model_name = type(encoder.model).__name__
+
+    # Create checkpoint directory if specified
+    if checkpoint_dir:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        print(f"Checkpoints will be saved to {checkpoint_dir}")
 
     # Initialize FLOP counters
     model_size = get_model_size(encoder.model)
     total_flops = 0
     probe_training_flops = 0
     adversarial_training_flops = 0
+    
+    wandb.init(
+        project="obfuscated-activations",
+        config={
+            # Model metadata
+            "model": {
+                "name": model_name,
+                "num_layers": len(layers),
+                "layers_used": layers,
+            },
+            # Probe metadata
+            "probe": {
+                "type": create_probe_fn.__name__,
+                "learning_rate": probe_lr,
+            },
+            # LoRA metadata
+            "lora": {
+                "enabled": use_lora_adapter,
+                "learning_rate": adapter_lr,
+                "params": lora_params,
+            },
+            # Training metadata
+            "training": {
+                "adversarial": adversarial_training,
+                "batch_size": batch_size,
+                "grad_accumulation_steps": n_grad_accum,
+                "max_steps": n_steps,
+                "kl_penalty": kl_penalty,
+                "max_sequence_length": max_length,
+            },
+            # Dataset metadata
+            "dataset": {
+                "num_positive_examples": len(positive_examples),
+                "num_negative_examples": len(negative_examples),
+            },
+            # Adversarial training params
+            "adversarial": {
+                "epsilon": epsilon,
+                "pgd_iterations": pgd_iterations,
+                "start_step": start_adv_training_at_step,
+                "adversary_lr": adversary_lr,
+                "freeze_probes": freeze_probes_during_adversarial_training,
+                "freeze_lora_warmup": freeze_lora_during_warmup,
+            },
+            # Masking configuration
+            "masking": {
+                "return_on_tokens": str(only_return_on_tokens_between),
+                "choose_prompt_tokens": str(only_choose_prompt_tokens_between),
+                "probe_tokens": str(only_probe_tokens_between),
+            },
+            # Add FLOP tracking configuration
+            "flops_tracking": {
+                "model_size": model_size,
+                "track_backward_pass": True,
+            },
+            # Checkpoint configuration
+            "checkpointing": {
+                "enabled": checkpoint_dir is not None,
+                "directory": checkpoint_dir,
+                "frequency": checkpoint_every,
+            },
+        },
+        tags=[
+            model_name,
+            "adversarial" if adversarial_training else "standard",
+            "lora" if use_lora_adapter else "no-lora"
+        ]
+    )
 
     # Initialize probes and optimizers for each layer
     probes, optimizers = initialize_probes_and_optimizers(
@@ -470,6 +554,12 @@ def train_online_probe(
     negative_input_ids = negative_tokens["input_ids"]
     negative_attention_mask = negative_tokens["attention_mask"]
 
+    # Log tokenization statistics
+    wandb.log({
+        "tokens/pos_avg_length": torch.sum(positive_attention_mask).item() / len(positive_attention_mask),
+        "tokens/neg_avg_length": torch.sum(negative_attention_mask).item() / len(negative_attention_mask),
+    })
+
     # Target mask - where we compute the main loss
     if only_return_on_tokens_between is not None:
         zero_positive_mask = get_valid_token_mask(
@@ -495,6 +585,14 @@ def train_online_probe(
         probe_positive_mask = zero_positive_mask
         probe_negative_mask = zero_negative_mask
 
+    # Log mask statistics
+    wandb.log({
+        "masks/pos_target_ratio": zero_positive_mask.float().mean().item(),
+        "masks/neg_target_ratio": zero_negative_mask.float().mean().item(),
+        "masks/pos_probe_ratio": probe_positive_mask.float().mean().item(),
+        "masks/neg_probe_ratio": probe_negative_mask.float().mean().item(),
+    })
+
     # This is only relevant for adversarial training
     if only_choose_prompt_tokens_between is not None:
         assert adversarial_training
@@ -502,6 +600,11 @@ def train_online_probe(
             positive_input_ids, only_choose_prompt_tokens_between
         )
         pos_only_choose_mask = pos_only_choose_mask.to(device)
+        
+        # Log adversarial mask statistics
+        wandb.log({
+            "masks/pos_prompt_ratio": pos_only_choose_mask.float().mean().item(),
+        })
     else:
         pos_only_choose_mask = None
 
@@ -518,11 +621,22 @@ def train_online_probe(
     steps_since_last_log = 0
     info = {
         "softprompt_evals": [],
+        "flops": {
+            "total": 0,
+            "probe_training": 0,
+            "adversarial_training": 0,
+        }
     }
 
     wrappers = []
     adversaries = []
     pgd_probe_loss = 0
+
+    # Log initial model stats
+    wandb.log({
+        "model/parameters": model_size,
+        "training/start_time": start_time,
+    })
 
     pbar = tqdm(total=n_steps, desc="Training LORA+Probe")
 
@@ -558,7 +672,7 @@ def train_online_probe(
                 )
 
             # Forward pass on positive examples
-            with torch.autocast(device_type=device):
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
                 if adversarial_training and current_step >= start_adv_training_at_step:
                     # Print this out at the first adversarial training step
                     if current_step == start_adv_training_at_step:
@@ -589,6 +703,12 @@ def train_online_probe(
                                 )
                             )
                         )
+                        
+                        # Log first adversarial training step
+                        wandb.log({
+                            "adversarial/start_step": current_step,
+                            "adversarial/start_time": time.time() - start_time,
+                        })
 
                     # Disable model gradients
                     disable_model_gradients(lora_model)
@@ -597,7 +717,7 @@ def train_online_probe(
                     if (
                         current_step - start_adv_training_at_step
                     ) % run_softprompt_eval_every == 0:
-                        print("RUNNING SOFTPROMPT EVALUATION")
+                        print(f"RUNNING SOFTPROMPT EVALUATION")
                         results = benchmark_obfuscated_softprompt(
                             model=lora_model,
                             model_layers_module="base_model.model.model.layers",
@@ -605,6 +725,14 @@ def train_online_probe(
                             probes=probes,
                             **softprompt_evals_data,
                         )
+
+                        wandb.log({
+                            "eval/jailbreak_rate": results["jailbreak_rate"],
+                            "eval/avg_positive_score": results["avg_positive_score"],
+                            "eval/avg_negative_score": results["avg_negative_score"],
+                            "eval/success_rate_delta": results["avg_positive_score"] - results["avg_negative_score"],
+                            "step": current_step,
+                        })
 
                         info["softprompt_evals"].append(results)
                         print("Jailbreak Success Rate:", results["jailbreak_rate"])
@@ -656,7 +784,7 @@ def train_online_probe(
                 pos_acts = {
                     layer: pos_output.hidden_states[layer + 1] for layer in layers
                 }
-
+                
                 # Track forward pass FLOPs
                 forward_flops = calculate_flops(model_size, pos_tokens, include_backward=False)
                 total_flops += forward_flops
@@ -667,8 +795,9 @@ def train_online_probe(
 
             # Compute the positive probe losses using probe mask
             pos_loss = 0
+            layer_losses = {}
             for layer, probe in probes.items():
-                with torch.autocast(device_type=device):
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     pos_targets = torch.ones_like(
                         pos_acts[layer][..., 0], device=device
                     )
@@ -678,6 +807,7 @@ def train_online_probe(
                         mask=pos_batch_probe_mask,  # Use probe mask
                     )
                     pos_loss += pos_layer_loss
+                    layer_losses[f"layer_{layer}_pos_loss"] = pos_layer_loss.item()
 
             # Track backward pass FLOPs for positive examples
             backward_flops = calculate_flops(model_size, pos_tokens, include_backward=True) - forward_flops
@@ -694,7 +824,7 @@ def train_online_probe(
                 wrapper.enabled = False
 
             # Forward pass on negative examples
-            with torch.autocast(device_type=device):
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
                 neg_output = lora_model(
                     input_ids=neg_batch_input_ids,
                     output_hidden_states=True,
@@ -703,7 +833,7 @@ def train_online_probe(
                 neg_acts = {
                     layer: neg_output.hidden_states[layer + 1] for layer in layers
                 }
-
+                
                 # Track forward pass FLOPs for negative examples
                 forward_flops = calculate_flops(model_size, neg_tokens, include_backward=False)
                 total_flops += forward_flops
@@ -715,7 +845,7 @@ def train_online_probe(
             # Compute the negative probe losses using probe mask
             neg_loss = 0
             for layer, probe in probes.items():
-                with torch.autocast(device_type=device):
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     neg_targets = torch.zeros_like(
                         neg_acts[layer][..., 0], device=device
                     )
@@ -725,6 +855,7 @@ def train_online_probe(
                         mask=neg_batch_probe_mask,  # Use probe mask
                     )
                     neg_loss += neg_layer_loss
+                    layer_losses[f"layer_{layer}_neg_loss"] = neg_layer_loss.item()
 
             # Backward pass on negative examples
             neg_loss.backward(retain_graph=True)
@@ -811,6 +942,51 @@ def train_online_probe(
 
             current_step += 1
 
+            # Save checkpoints if specified
+            if checkpoint_dir and current_step % checkpoint_every == 0:
+                # Save probes
+                probe_path = os.path.join(checkpoint_dir, f"probes_step_{current_step}.pt")
+                save_probes(probes=probes, save_path=probe_path)
+                print(f"Saved probe checkpoint to {probe_path}")
+                
+                # Save LoRA model if using it
+                if use_lora_adapter:
+                    model_path = os.path.join(checkpoint_dir, f"lora_model_step_{current_step}")
+                    lora_model.save_pretrained(model_path)
+                    print(f"Saved model checkpoint to {model_path}")
+                
+                # Save training info
+                info_path = os.path.join(checkpoint_dir, f"training_info_step_{current_step}.json")
+                current_info = {
+                    "step": current_step,
+                    "probe_loss": accumulated_probe_loss / max(steps_since_last_log, 1),
+                    "kl_loss": accumulated_kl_loss / max(steps_since_last_log, 1),
+                    "flops": {
+                        "total": total_flops,
+                        "probe_training": probe_training_flops,
+                        "adversarial_training": adversarial_training_flops,
+                    },
+                    "timestamp": time.time(),
+                    "elapsed_time": time.time() - start_time
+                }
+                
+                if adversarial_training:
+                    current_info.update({
+                        "pgd_toward_loss": accumulated_toward_pgd_loss / max(steps_since_last_log, 1),
+                        "pgd_probe_loss": accumulated_probe_pgd_loss / max(steps_since_last_log, 1),
+                    })
+                
+                with open(info_path, "w") as f:
+                    json.dump(current_info, f)
+                print(f"Saved training info to {info_path}")
+                
+                # Log checkpoint in wandb
+                wandb.log({
+                    "checkpoint/step": current_step,
+                    "checkpoint/path": os.path.abspath(checkpoint_dir),
+                    "checkpoint/elapsed_time": time.time() - start_time,
+                })
+
             if current_step % n_steps_per_logging == 0:
                 avg_probe_loss = accumulated_probe_loss / steps_since_last_log
                 avg_kl_loss = accumulated_kl_loss / steps_since_last_log
@@ -826,10 +1002,45 @@ def train_online_probe(
                 )
                 avg_total_loss = avg_probe_loss + avg_kl_loss
 
+                # Prepare metrics to log
+                metrics = {
+                    "train/total_loss": avg_total_loss,
+                    "train/probe_loss": avg_probe_loss,
+                    "train/kl_loss": avg_kl_loss,
+                    "step": current_step,
+                    "elapsed_time": time.time() - start_time,
+                    "tokens_processed": current_step * batch_size * max_length,
+                }
+                
+                # Add per-layer losses
+                for key, value in layer_losses.items():
+                    metrics[f"train/{key}"] = value
+
+                if adversarial_training:
+                    metrics.update({
+                        "train/pgd_toward_loss": avg_toward_pgd_loss,
+                        "train/pgd_probe_loss": avg_probe_pgd_loss,
+                    })
+
+                # Log FLOP metrics
+                metrics.update({
+                    "flops/total": total_flops,
+                    "flops/probe_training": probe_training_flops,
+                    "flops/adversarial_training": adversarial_training_flops,
+                })
+                
+                # Log GPU memory usage
+                if torch.cuda.is_available():
+                    for i in range(torch.cuda.device_count()):
+                        metrics[f"system/gpu{i}_memory_used"] = torch.cuda.memory_allocated(i) / (1024**3)  # in GB
+                
                 # Update info dictionary
                 info["flops"]["total"] = total_flops
                 info["flops"]["probe_training"] = probe_training_flops
                 info["flops"]["adversarial_training"] = adversarial_training_flops
+
+                # Log all metrics to wandb
+                wandb.log(metrics)
 
                 log_message = (
                     f"Step: {current_step}/{n_steps}, "
@@ -858,6 +1069,26 @@ def train_online_probe(
 
             pbar.update(1)  # Update progress bar
 
+    # Log final summary stats
+    wandb.run.summary.update({
+        "final_probe_loss": avg_probe_loss,
+        "final_kl_loss": avg_kl_loss,
+        "final_total_loss": avg_total_loss,
+        "training_duration": time.time() - start_time,
+        "total_steps": current_step,
+        "total_flops": total_flops,
+        "probe_training_flops": probe_training_flops,
+        "adversarial_training_flops": adversarial_training_flops,
+    })
+
+    if adversarial_training:
+        wandb.run.summary.update({
+            "final_pgd_toward_loss": avg_toward_pgd_loss,
+            "final_pgd_probe_loss": avg_probe_pgd_loss,
+        })
+
+    # Close wandb run
+    wandb.finish()
     return probes, lora_model, info
 
 

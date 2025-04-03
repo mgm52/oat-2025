@@ -333,7 +333,6 @@ def main():
     elif use_lora_probes:
          print("Warning: LoRA probes enabled but the returned model doesn't have 'save_pretrained'. Cannot save LoRA adapter.")
 
-
     # Save the info
     with open(os.path.join(probes_folder, f"{name}_info.json"), "w") as f:
         json.dump(info, f)
