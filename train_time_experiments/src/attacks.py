@@ -483,77 +483,82 @@ def train_attack(
     adversary_type="pgd",
     verbose=False,
     initial_soft_prompt_text=None,
+    adversaries=None,
+    wrappers=None,
+    optim_step=True,
 ):
     # Clear and initialize the adversary
     clear_hooks(model)
     if isinstance(layer, int):
         layer = [layer]
 
-    if adversary_type == "pgd":
-        create_adversary = lambda x: GDAdversary(
-            dim=model.config.hidden_size,
-            device=device,
-            epsilon=epsilon,
-            attack_mask=prompt_mask.to(device),
-        )
-    elif adversary_type == "low_rank":
-        create_adversary = lambda x: LowRankAdversary(
-            dim=model.config.hidden_size,
-            rank=16,
-            device=device,
-            zero_init=True,
-        )
-    elif adversary_type == "vector":
-        create_adversary = lambda x: VectorAdversary(
-            dim=model.config.hidden_size,
-            batch_size=adv_tokens.shape[0],
-            epsilon=epsilon,
-            device=device,
-        )
-    elif adversary_type == "soft_prompt":
-        assert (
-            initial_soft_prompt_text is not None
-        ), "Initial soft prompt text must be provided"
-
-        # Get soft prompt tokens
-        init_tokens = tokenizer(
-            initial_soft_prompt_text,
-            return_tensors="pt",
-            add_special_tokens=False,  # Important to not add special tokens
-        )["input_ids"].to(device)
-
-        # Prepare inputs for soft prompt
-        adv_tokens, prompt_mask, target_mask, insert_mask, _ = (
-            prepare_soft_prompt_inputs(
-                adv_tokens, prompt_mask, target_mask, init_tokens
+    if adversaries is None or wrappers is None:
+        print("No adversaries given, creating adversaries...")
+        if adversary_type == "pgd":
+            create_adversary = lambda x: GDAdversary(
+                dim=model.config.hidden_size,
+                device=device,
+                epsilon=epsilon,
+                attack_mask=prompt_mask.to(device),
             )
-        )
+        elif adversary_type == "low_rank":
+            create_adversary = lambda x: LowRankAdversary(
+                dim=model.config.hidden_size,
+                rank=16,
+                device=device,
+                zero_init=True,
+            )
+        elif adversary_type == "vector":
+            create_adversary = lambda x: VectorAdversary(
+                dim=model.config.hidden_size,
+                batch_size=adv_tokens.shape[0],
+                epsilon=epsilon,
+                device=device,
+            )
+        elif adversary_type == "soft_prompt":
+            assert (
+                initial_soft_prompt_text is not None
+            ), "Initial soft prompt text must be provided"
 
-        # Create a PGD adversary where the soft prompt should be
-        create_adversary = lambda x: GDAdversary(
-            dim=model.config.hidden_size,
-            device=device,
-            epsilon=epsilon,
-            attack_mask=insert_mask.to(device),
-        )
-    else:
-        raise ValueError(f"Adversary type {adversary_type} not recognized")
+            # Get soft prompt tokens
+            init_tokens = tokenizer(
+                initial_soft_prompt_text,
+                return_tensors="pt",
+                add_special_tokens=False,  # Important to not add special tokens
+            )["input_ids"].to(device)
 
-    adversary_locations = [
-        (f"{model_layers_module}", f"{layer_i}")
-        for layer_i in layer
-        if isinstance(layer_i, int)
-    ]
-    if "embedding" in layer:
-        adversary_locations.append(
-            (model_layers_module.replace(".layers", ""), "embed_tokens")
-        )
+            # Prepare inputs for soft prompt
+            adv_tokens, prompt_mask, target_mask, insert_mask, _ = (
+                prepare_soft_prompt_inputs(
+                    adv_tokens, prompt_mask, target_mask, init_tokens
+                )
+            )
 
-    adversaries, wrappers = add_hooks(
-        model,
-        create_adversary=create_adversary,
-        adversary_locations=adversary_locations,
-    )
+            # Create a PGD adversary where the soft prompt should be
+            create_adversary = lambda x: GDAdversary(
+                dim=model.config.hidden_size,
+                device=device,
+                epsilon=epsilon,
+                attack_mask=insert_mask.to(device),
+            )
+        else:
+            raise ValueError(f"Adversary type {adversary_type} not recognized")
+
+        adversary_locations = [
+            (f"{model_layers_module}", f"{layer_i}")
+            for layer_i in layer
+            if isinstance(layer_i, int)
+        ]
+        if "embedding" in layer:
+            adversary_locations.append(
+                (model_layers_module.replace(".layers", ""), "embed_tokens")
+            )
+
+        adversaries, wrappers = add_hooks(
+            model,
+            create_adversary=create_adversary,
+            adversary_locations=adversary_locations,
+        )
     params = [p for adv in adversaries for p in adv.parameters()]
 
     # Define optimization utils
@@ -567,8 +572,8 @@ def train_attack(
 
     # Optimize adversary to elicit attack labels
     for _ in tqdm(range(pgd_iterations), disable=not verbose):
-        adv_optim.zero_grad()
 
+        # FIXME: OOM
         # Compute the adversary loss
         compute_adversarial_loss(
             model=model,
@@ -599,23 +604,27 @@ def train_attack(
             losses["l2_norm"] = reg_loss.item() / np.sqrt(num_el)
 
         # Optimizer step
-        for adv in adversaries:
-            zero_nan_grads(adv)
+        print(f"{optim_step=}")
+        if optim_step:
+            for adv in adversaries:
+                zero_nan_grads(adv)
 
-        if clip_grad is not None:
-            torch.nn.utils.clip_grad_norm_(params, clip_grad)
-        adv_optim.step()
+            if clip_grad is not None:
+                torch.nn.utils.clip_grad_norm_(params, clip_grad)
+        
+            adv_optim.step()
+            adv_optim.zero_grad()
 
-        for adv in adversaries:
-            adv.clip_attack()
+            for adv in adversaries:
+                adv.clip_attack()
 
-        if return_loss_over_time:
-            loss_over_time.append(copy.deepcopy(losses))
+            if return_loss_over_time:
+                loss_over_time.append(copy.deepcopy(losses))
         
     # Add FLOP count to losses
     losses["flops"] = total_attack_flops
 
-    return (loss_over_time, wrappers) if return_loss_over_time else (losses, wrappers)
+    return (loss_over_time, adversaries, wrappers) if return_loss_over_time else (losses, adversaries, wrappers)
 
 
 def train_universal_attack(

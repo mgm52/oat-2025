@@ -1,0 +1,25 @@
+torch
+transformers
+huggingface_hub[cli]
+datasets
+git+https://github.com/TransformerLensOrg/TransformerLens
+circuitsvis
+peft
+simple_parsing
+natsort
+scikit-learn
+matplotlib
+plotly
+seaborn
+pandas
+wandb
+# flash-attn
+numpy==1.26.4
+pyod
+https://github.com/ejnnr/cupbearer/archive/abhay_update.zip
+fire
+openai
+jupyterlab
+ipykernel
+ipywidgets
+# pytorch_memlab

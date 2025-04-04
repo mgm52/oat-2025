@@ -113,37 +113,46 @@ def split_dataset(dataset, train_ratio=0.9, val_ratio=0.1, test_ratio=0.0):
 
     return train_set, val_set, test_set
 
+MODEL="gemma2"
+match MODEL:
+    case "LLAMA":
+        ASSISTANT_TOKEN = 78191
+        NEWLINE_TOKEN = 271
+        USER_TOKEN = 882
+        INSTRUCTION_START = 128000
+        INSTRUCTION_END = 128009
+    case "gemma2":
+        ASSISTANT_TOKEN = 2516
+        NEWLINE_TOKEN = 108
+        USER_TOKEN = 1645
+        INSTRUCTION_START = 106
+        INSTRUCTION_END = 107
+
 
 def is_token_after_assistant(seq_idx, token, tokens):
-    ASSISTANT_TOKEN = 78191
     return seq_idx >= 1 and tokens[seq_idx - 1] == ASSISTANT_TOKEN
 
 
 def is_at_newline_after_assistant(seq_idx, token, tokens):
-    NEWLINE_TOKEN = 271
-    ASSISTANT_TOKEN = 78191
     return (
-        seq_idx >= 2
-        and tokens[seq_idx - 2] == ASSISTANT_TOKEN
+        # seq_idx >= 2
+        seq_idx >= 1
+        # and tokens[seq_idx - 2] == ASSISTANT_TOKEN
+        and tokens[seq_idx - 1] == ASSISTANT_TOKEN
         and token == NEWLINE_TOKEN
     )
 
 
 def is_at_newline_after_user(seq_idx, token, tokens):
-    NEWLINE_TOKEN = 271
-    USER_TOKEN = 882
-    return seq_idx >= 2 and tokens[seq_idx - 2] == USER_TOKEN and token == NEWLINE_TOKEN
+    # return seq_idx >= 2 and tokens[seq_idx - 2] == USER_TOKEN and token == NEWLINE_TOKEN
+    return seq_idx >= 1 and tokens[seq_idx - 1] == USER_TOKEN and token == NEWLINE_TOKEN
 
 
 def is_at_token_after_newline(seq_idx, token, tokens):
-    NEWLINE_TOKEN = 271
     return seq_idx >= 1 and tokens[seq_idx - 1] == NEWLINE_TOKEN
 
 
 def get_token_ranges(masking_type):
-    INSTRUCTION_START = 128000
-    INSTRUCTION_END = 128009
-
     if masking_type == "generation":
         return {
             "only_return_on_tokens_between": [
