@@ -1,7 +1,9 @@
 # %%
+import datetime
 import os
 os.environ["HF_TOKEN"] = "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"
 os.environ["HF_HOME"] = "~/workspace/.cache/huggingface"
+os.environ["OPENAI_API_KEY"] = "dummy_string"
 
 
 # %%
@@ -170,7 +172,8 @@ initial_soft_prompt_text_tokens = encoder.tokenizer(
     return_tensors="pt",
     add_special_tokens=False,  # special tokens already in dataset!
 )
-# # positive_input_ids = torch.cat([positive_input_ids, initial_soft_prompt_text_tokens.input_ids.repeat(positive_input_ids.shape[0], 1)], dim=1)
+# # TODO: Only used for soft prompt
+# positive_input_ids = torch.cat([positive_input_ids, initial_soft_prompt_text_tokens.input_ids.repeat(positive_input_ids.shape[0], 1)], dim=1)
 
 
 positive_attention_mask = positive_tokens["attention_mask"]
@@ -224,22 +227,80 @@ n_examples = len(positive_examples)
 
 # %%
 
-n_steps = 1 # 32
+n_steps = 4096 # 32
 continue_training_next_epoch = True
 step_count = 1
 batch_size = 2  #2  #4
-pgd_iterations = 32  #32  #1  #128  # 32
+pgd_iterations = 1  #32  #32  #1  #128  # 32
 adversary_lr = 1e-3  # 1e-3
 epsilon = 10 # ??
+towards_loss_coef=1.0
+probe_loss_coef=1.0
 probes = probes
 adversaries = wrappers = None
+run_softprompt_eval_every = 128_000
+checkpoint_every = 128
+checkpoint_dir = "checkpoints/adversaries"
 # n_grad_accum = 8
-
+gradient_accumulation_steps = 8
 adversary_type = "pgd"
+# adversary_type = "soft_prompt"
 
+# Create checkpoint directory if it doesn't exist
+os.makedirs(checkpoint_dir, exist_ok=True)
+
+softprompt_evals_data={
+    # "test_negative_examples": retain_examples_val,
+    # "test_positive_examples": forget_examples_val,
+    # "test_positive_prompts": forget_examples_val_prompts,
+    "test_negative_examples": split_jailbreaks_dataset.examples_good.val,
+    "test_positive_examples": split_jailbreaks_dataset.examples_bad.val,
+    "test_positive_prompts": split_jailbreaks_dataset.prompts_only_bad.val,
+    "only_return_on_tokens_between": only_return_on_tokens_between,
+    "only_choose_prompt_tokens_between": only_choose_prompt_tokens_between,
+    "only_probe_tokens_between": only_probe_tokens_between,
+}
+
+
+generations_table = None
+# Initialize wandb
+use_wandb = True  # Set to False to disable wandb logging
+if use_wandb:
+    import wandb
+    import datetime
+    
+    # Log hyperparameters
+    config = {
+        "n_steps": n_steps,
+        "batch_size": batch_size,
+        "pgd_iterations": pgd_iterations,
+        "adversary_lr": adversary_lr,
+        "epsilon": epsilon,
+        "towards_loss_coef": towards_loss_coef,
+        "probe_loss_coef": probe_loss_coef,
+        "adversary_type": adversary_type,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+    }
+    
+    wandb.init(
+        project="probe-attack",
+        name=f"attack_run_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}", 
+        config=config
+    )
+    # Create new table
+    generations_table = wandb.Table(columns=["prompt", 
+    "response"])
 
 pbar = tqdm(total=n_steps, desc="Attacking LORA+Probe")
 total_flops = 0
+
+# Append header and null row to losses.csv if it doesn't exist
+import os
+if not os.path.exists('losses.csv'):
+    with open('losses.csv', 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['toward', 'probe', 'total', 'step_flops', 'cumulative_flops'])
+        writer.writerow([None, None, None, None, None])
 
 while continue_training_next_epoch:
     # Shuffle the examples
@@ -276,11 +337,9 @@ while continue_training_next_epoch:
         # Forward pass on positive examples
         with torch.autocast(device_type=device):
             import csv
-            with open('losses.csv', 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(['toward', 'probe', 'total', 'step_flops', 'cumulative_flops'])
 
             # Run attack
+            # losses, adversaries, wrappers = train_attack(
             losses, adversaries, wrappers = train_attack(
                 adv_tokens=pos_batch_input_ids,
                 prompt_mask=pos_batch_only_choose_mask,
@@ -292,6 +351,7 @@ while continue_training_next_epoch:
                 epsilon=epsilon,
                 learning_rate=adversary_lr,
                 pgd_iterations=pgd_iterations,
+                # n_steps=n_steps,
                 probes=probes,
                 probe_mask=pos_batch_probe_mask,  # Pass probe mask
                 adversary_type=adversary_type,
@@ -301,12 +361,54 @@ while continue_training_next_epoch:
                 # optim_step=step_count % n_grad_accum == 0,
                 optim_step=True,
                 initial_soft_prompt_text=initial_soft_prompt_text,
+                towards_loss_coef=towards_loss_coef,
+                probe_loss_coef=probe_loss_coef,
             )
+
+            # Run this eval to benchmark the effectiveness of universal soft prompts
+            if step_count % run_softprompt_eval_every == 0:
+                print("RUNNING SOFTPROMPT EVALUATION")
+                results = benchmark_obfuscated_softprompt(
+                    model=lora_model,
+                    model_layers_module="base_model.model.model.layers",
+                    tokenizer=encoder.tokenizer,
+                    probes=probes,
+                    **softprompt_evals_data,
+                    adversaries=adversaries,
+                    wrappers=wrappers,
+                    gen_batch_size=batch_size,
+                    generations_table=generations_table,
+                )
+                print("Jailbreak Success Rate:", results["jailbreak_rate"])
+                print("Average positive score:", results["avg_positive_score"])
+                print("Average negative score:", results["avg_negative_score"])
+
+                # Log benchmark results to wandb
+                if use_wandb:
+                    wandb.log({
+                        "benchmark/jailbreak_rate": results["jailbreak_rate"],
+
+                        "benchmark/avg_positive_score": results["avg_positive_score"],
+                        "benchmark/avg_negative_score": results["avg_negative_score"],
+                        "step": step_count
+                    })
+
+            # Checkpoint adversaries and wrappers
+            if step_count % checkpoint_every == 0:
+                checkpoint = {
+                    'step': step_count,
+                    'adversaries': adversaries,
+                    'wrappers': wrappers,
+                    'total_flops': total_flops
+                }
+                checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_step_{step_count}.pt')
+                torch.save(checkpoint, checkpoint_path)
+                print(f"Saved checkpoint to {checkpoint_path}")
 
             # Update total flops
             total_flops += losses['flops']
 
-            # Write losses to CSV
+            # Append losses to CSV
             with open('losses.csv', 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([
@@ -317,87 +419,103 @@ while continue_training_next_epoch:
                     total_flops
                 ])
 
-            print(losses)
+            # Log metrics to wandb
+            if use_wandb:
+                wandb.log({
+                    "train/toward_loss": losses['toward'],
+                    "train/probe_loss": losses['probe'],
+                    "train/total_loss": losses['total'],
+                    "train/step_flops": losses['flops'],
+                    "train/cumulative_flops": total_flops,
+                    "step": step_count
+                })
+
+            # print(losses)
         step_count += 1
-        continue_training_next_epoch = False
-        break
-        # if n_steps is not None and step_count >= n_steps:
-        #     continue_training_next_epoch = False
-            # break
-        # pbar.update(1)
+        # continue_training_next_epoch = False
+        # break
+        if n_steps is not None and step_count >= n_steps:
+            continue_training_next_epoch = False
+            break
+        pbar.update(1)
     else:
         continue
 
 
-# %%
 
 
-bad_example = split_jailbreaks_dataset.examples_bad.train[0]
-bad_prompt, bad_generation = bad_example.split('model\n')
-bad_prompt += "model\n"
-encoder.tokenizer.padding_side = "left"
-bad_prompt_tokens = encoder.tokenizer(bad_prompt, return_tensors="pt"    ,
-                                      padding=True,
-                                      max_length=1024,
-                                      add_special_tokens=False,  # special tokens already in dataset!
-).input_ids
-bad_prompt_tokens = bad_prompt_tokens.to("cuda")
-bad_generation_tokens = encoder.tokenizer(bad_generation, return_tensors="pt"    ,
-                                      padding=True,
-                                      max_length=1024,
-                                      add_special_tokens=False,  # special tokens already in dataset!
-).input_ids
-bad_generation_tokens = bad_generation_tokens.to("cuda")
 
-embedding = lora_model.base_model.model.model.embed_tokens.cuda()
-# # embedding = lora_model.base_model.model.model.embed_tokens.module.cuda()
-# inp = initial_soft_prompt_text_tokens.input_ids.cuda()
-# initial_embedding_suffix = embedding(inp)
+# # %%
+
+
+# bad_example = split_jailbreaks_dataset.examples_bad.train[0]
+# bad_prompt, bad_generation = bad_example.split('model\n')
+# bad_prompt += "model\n"
+# encoder.tokenizer.padding_side = "left"
+# bad_prompt_tokens = encoder.tokenizer(bad_prompt, return_tensors="pt"    ,
+#                                       padding=True,
+#                                       max_length=1024,
+#                                       add_special_tokens=False,  # special tokens already in dataset!
+# ).input_ids
+# bad_prompt_tokens = bad_prompt_tokens.to("cuda")
+# bad_generation_tokens = encoder.tokenizer(bad_generation, return_tensors="pt"    ,
+#                                       padding=True,
+#                                       max_length=1024,
+#                                       add_special_tokens=False,  # special tokens already in dataset!
+# ).input_ids
+# bad_generation_tokens = bad_generation_tokens.to("cuda")
+
+# embedding = lora_model.base_model.model.model.embed_tokens.cuda()
+# # # embedding = lora_model.base_model.model.model.embed_tokens.module.cuda()
+# # inp = initial_soft_prompt_text_tokens.input_ids.cuda()
+# # initial_embedding_suffix = embedding(inp)
+# # embedding_suffix = nn.Parameter(data=initial_embedding_suffix)
+# # embedding_suffix.cuda()
+
+# embedding_size = 3584
+# initial_embedding_suffix = torch.zeros(size=(1, embedding_size), dtype=torch.bfloat16)
 # embedding_suffix = nn.Parameter(data=initial_embedding_suffix)
-# embedding_suffix.cuda()
-
-embedding_size = 3584
-initial_embedding_suffix = torch.zeros(size=(1, embedding_size), dtype=torch.bfloat16)
-embedding_suffix = nn.Parameter(data=initial_embedding_suffix)
-embedding_suffix = embedding_suffix.to("cuda")
-torch.nn.init.kaiming_uniform_(initial_embedding_suffix)
-epsilon = 10
-with torch.no_grad():
-    norms = torch.norm(initial_embedding_suffix, dim=-1, keepdim=True)
-    scale = torch.clamp(norms / epsilon, min=1)
-    initial_embedding_suffix.div_(scale)
-def add_embedding_suffix(model, input, output):
-    return output + embedding_suffix
-
-
-
-
-# # def add_embedding_suffix(name):
-# #     # the hook signature
-# #     def hook(model, input, output):
-# #         return torch.cat([output, embedding_suffix], dim=1)
-# #     return hook
+# embedding_suffix = embedding_suffix.to("cuda")
+# torch.nn.init.kaiming_uniform_(initial_embedding_suffix)
+# epsilon = 10
+# with torch.no_grad():
+#     norms = torch.norm(initial_embedding_suffix, dim=-1, keepdim=True)
+#     scale = torch.clamp(norms / epsilon, min=1)
+#     initial_embedding_suffix.div_(scale)
 # def add_embedding_suffix(model, input, output):
-#     return torch.cat([output, embedding_suffix], dim=1)
-
-# import collections
-# lora_model.base_model.model.model.embed_tokens._forward_hooks = collections.OrderedDict()
-h = lora_model.base_model.model.model.embed_tokens.register_forward_hook(add_embedding_suffix)
-
-# lora_model.base_model.model.model.embed_tokens.hook_fn.forward = lambda x: x
-
-lora_model = lora_model.to("cuda")
-lora_model(bad_prompt_tokens.to("cuda"))
+#     return output + embedding_suffix
 
 
-out = lora_model.generate(bad_prompt_tokens.to("cuda"), max_new_tokens=471,
-                          return_dict_in_generate=True, output_scores=True)
-criterion = nn.BCEWithLogitsLoss()
 
-# FIXME: Reshape out.scores
-behavioural_loss = criterion(out.scores, bad_generation_tokens)
 
-# TODO: Gather/average probe logits
+# # # def add_embedding_suffix(name):
+# # #     # the hook signature
+# # #     def hook(model, input, output):
+# # #         return torch.cat([output, embedding_suffix], dim=1)
+# # #     return hook
+# # def add_embedding_suffix(model, input, output):
+# #     return torch.cat([output, embedding_suffix], dim=1)
 
+# # import collections
+# # lora_model.base_model.model.model.embed_tokens._forward_hooks = collections.OrderedDict()
+# h = lora_model.base_model.model.model.embed_tokens.register_forward_hook(add_embedding_suffix)
+
+# # lora_model.base_model.model.model.embed_tokens.hook_fn.forward = lambda x: x
+
+# lora_model = lora_model.to("cuda")
+# lora_model(bad_prompt_tokens.to("cuda"))
+
+
+# out = lora_model.generate(bad_prompt_tokens.to("cuda"), max_new_tokens=471,
+#                           return_dict_in_generate=True, output_scores=True)
+# criterion = nn.BCEWithLogitsLoss()
+
+# # FIXME: Reshape out.scores
+# behavioural_loss = criterion(out.scores, bad_generation_tokens)
+
+# # TODO: Gather/average probe logits
+
+
+# # %%
 
 # %%
