@@ -17,22 +17,22 @@ from compute_oat_probes import LinearProbe
 # Load probes
 encoder = DeepmindSparseAutoencoder.load_gemma2_sae(None, 11)
 
-# lora_model_path = "oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/lora_model_step_256"
-# lora_model = PeftModel.from_pretrained(encoder.model, lora_model_path, is_trainable=False)
+lora_model_path = "oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/lora_model_step_256"
+lora_model = PeftModel.from_pretrained(encoder.model, lora_model_path, is_trainable=False)
 encoder.model.eval()
-layers = [4, 8, 12, 16, 20, 24]
-lora_params = {}
-lora_model = initialize_lora_adapter(encoder, layers, lora_params)
+# layers = [4, 8, 12, 16, 20, 24]
+# lora_params = {}
+# lora_model = initialize_lora_adapter(encoder, layers, lora_params)
 
-probes = {}
-for layer in layers:
-    probes[layer] = LinearProbe(encoder.model.config.hidden_size)
-    probes[layer].eval()
+# probes = {}
+# for layer in layers:
+#     probes[layer] = LinearProbe(encoder.model.config.hidden_size)
+#     probes[layer].eval()
 
-# probes_path = "oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/probes_step_256.pt"
-# pretrained_probes = torch.load(probes_path, weights_only=False)
-# for probe in pretrained_probes.values():
-#     probe.eval()
+probes_path = "oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/probes_step_256.pt"
+pretrained_probes = torch.load(probes_path, weights_only=False)
+for probe in pretrained_probes.values():
+    probe.eval()
 
 # %%
 # Load dataset
@@ -229,7 +229,7 @@ n_examples = len(positive_examples)
 
 n_steps = 4096 # 32
 continue_training_next_epoch = True
-step_count = 1
+step_count = 0
 batch_size = 2  #2  #4
 pgd_iterations = 1  #32  #32  #1  #128  # 32
 adversary_lr = 1e-3  # 1e-3
@@ -365,33 +365,6 @@ while continue_training_next_epoch:
                 probe_loss_coef=probe_loss_coef,
             )
 
-            # Run this eval to benchmark the effectiveness of universal soft prompts
-            if step_count % run_softprompt_eval_every == 0:
-                print("RUNNING SOFTPROMPT EVALUATION")
-                results = benchmark_obfuscated_softprompt(
-                    model=lora_model,
-                    model_layers_module="base_model.model.model.layers",
-                    tokenizer=encoder.tokenizer,
-                    probes=probes,
-                    **softprompt_evals_data,
-                    adversaries=adversaries,
-                    wrappers=wrappers,
-                    gen_batch_size=batch_size,
-                    generations_table=generations_table,
-                )
-                print("Jailbreak Success Rate:", results["jailbreak_rate"])
-                print("Average positive score:", results["avg_positive_score"])
-                print("Average negative score:", results["avg_negative_score"])
-
-                # Log benchmark results to wandb
-                if use_wandb:
-                    wandb.log({
-                        "benchmark/jailbreak_rate": results["jailbreak_rate"],
-
-                        "benchmark/avg_positive_score": results["avg_positive_score"],
-                        "benchmark/avg_negative_score": results["avg_negative_score"],
-                        "step": step_count
-                    })
 
             # Checkpoint adversaries and wrappers
             if step_count % checkpoint_every == 0:
@@ -434,14 +407,59 @@ while continue_training_next_epoch:
         step_count += 1
         # continue_training_next_epoch = False
         # break
-        if n_steps is not None and step_count >= n_steps:
+        if n_steps is not None and step_count > n_steps:
             continue_training_next_epoch = False
             break
         pbar.update(1)
     else:
         continue
 
+# %%
+# # Load latest checkpoint if it exists
+# latest_checkpoint = None
+# latest_step = -1
+# for filename in os.listdir(checkpoint_dir):
+#     if filename.startswith('checkpoint_step_') and filename.endswith('.pt'):
+#         step = int(filename.split('_')[-1].split('.')[0])
+#         if step > latest_step:
+#             latest_step = step
+#             latest_checkpoint = filename
 
+# latest_checkpoint = "checkpoint_step_3968"
+# if latest_checkpoint is not None:
+#     checkpoint_path = os.path.join(checkpoint_dir, latest_checkpoint)
+#     checkpoint = torch.load(checkpoint_path)
+#     step_count = checkpoint['step']
+#     adversaries = checkpoint['adversaries'] 
+#     wrappers = checkpoint['wrappers']
+#     total_flops = checkpoint['total_flops']
+#     print(f"Loaded checkpoint from {checkpoint_path}")
+
+print("RUNNING SOFTPROMPT EVALUATION")
+results = benchmark_obfuscated_softprompt(
+    model=lora_model,
+    model_layers_module="base_model.model.model.layers",
+    tokenizer=encoder.tokenizer,
+    probes=probes,
+    **softprompt_evals_data,
+    adversaries=adversaries,
+    wrappers=wrappers,
+    gen_batch_size=batch_size,
+    generations_table=generations_table,
+)
+print("Jailbreak Success Rate:", results["jailbreak_rate"])
+print("Average positive score:", results["avg_positive_score"])
+print("Average negative score:", results["avg_negative_score"])
+
+# Log benchmark results to wandb
+if use_wandb:
+    wandb.log({
+        "benchmark/jailbreak_rate": results["jailbreak_rate"],
+
+        "benchmark/avg_positive_score": results["avg_positive_score"],
+        "benchmark/avg_negative_score": results["avg_negative_score"],
+        "step": step_count
+    })
 
 
 

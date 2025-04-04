@@ -1069,7 +1069,7 @@ def benchmark_obfuscated_softprompt(
             # for adv in adversaries:
             #     adv.attack_mask = curr_mask
 
-            print(f"{batch_examples=}")
+            # print(f"{batch_examples=}")
             # Get probe scores for batch
             batch_scores = get_probe_scores(
                 probes=probes,
