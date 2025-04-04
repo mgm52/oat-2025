@@ -1,10 +1,6 @@
 # %%
 import datetime
 import os
-os.environ["HF_TOKEN"] = "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"
-os.environ["HF_HOME"] = "~/workspace/.cache/huggingface"
-os.environ["OPENAI_API_KEY"] = "dummy_string"
-
 
 # %%
 from src.probe_training import *
@@ -30,7 +26,7 @@ encoder.model.eval()
 #     probes[layer].eval()
 
 probes_path = "oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/probes_step_256.pt"
-pretrained_probes = torch.load(probes_path, weights_only=False)
+probes = torch.load(probes_path, weights_only=False)
 for probe in pretrained_probes.values():
     probe.eval()
 
