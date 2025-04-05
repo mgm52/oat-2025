@@ -9,27 +9,6 @@ from src import *
 from peft import PeftModel
 from compute_oat_probes import LinearProbe
 
-# Load model
-# Load probes
-encoder = DeepmindSparseAutoencoder.load_gemma2_sae(None, 11)
-
-lora_model_path = "oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/lora_model_step_256"
-lora_model = PeftModel.from_pretrained(encoder.model, lora_model_path, is_trainable=False)
-encoder.model.eval()
-# layers = [4, 8, 12, 16, 20, 24]
-# lora_params = {}
-# lora_model = initialize_lora_adapter(encoder, layers, lora_params)
-
-# probes = {}
-# for layer in layers:
-#     probes[layer] = LinearProbe(encoder.model.config.hidden_size)
-#     probes[layer].eval()
-
-probes_path = "oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/probes_step_256.pt"
-probes = torch.load(probes_path, weights_only=False)
-for probe in pretrained_probes.values():
-    probe.eval()
-
 # %%
 # Load dataset
 from datasets import load_dataset
@@ -223,214 +202,194 @@ n_examples = len(positive_examples)
 
 # %%
 
-n_steps = 4096 # 32
-continue_training_next_epoch = True
-step_count = 0
-batch_size = 2  #2  #4
-pgd_iterations = 1  #32  #32  #1  #128  # 32
-adversary_lr = 1e-3  # 1e-3
-epsilon = 10 # ??
-towards_loss_coef=1.0
-probe_loss_coef=1.0
-probes = probes
-adversaries = wrappers = None
-run_softprompt_eval_every = 128_000
-checkpoint_every = 128
-checkpoint_dir = "checkpoints/adversaries"
-# n_grad_accum = 8
-gradient_accumulation_steps = 8
-adversary_type = "pgd"
-# adversary_type = "soft_prompt"
+# Load model
+# Load probes
+encoder = DeepmindSparseAutoencoder.load_gemma2_sae(None, 11)
 
-# Create checkpoint directory if it doesn't exist
-os.makedirs(checkpoint_dir, exist_ok=True)
+# Get available steps from filesystem
+probe_lora_steps = []
+lora_model_dir = "oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear"
+for filename in os.listdir(lora_model_dir):
+    if filename.startswith("lora_model_step_"):
+        step = int(filename.split("_")[-1])
+        probe_lora_steps.append(step)
+probe_lora_steps.sort()
 
-softprompt_evals_data={
-    # "test_negative_examples": retain_examples_val,
-    # "test_positive_examples": forget_examples_val,
-    # "test_positive_prompts": forget_examples_val_prompts,
-    "test_negative_examples": split_jailbreaks_dataset.examples_good.val,
-    "test_positive_examples": split_jailbreaks_dataset.examples_bad.val,
-    "test_positive_prompts": split_jailbreaks_dataset.prompts_only_bad.val,
-    "only_return_on_tokens_between": only_return_on_tokens_between,
-    "only_choose_prompt_tokens_between": only_choose_prompt_tokens_between,
-    "only_probe_tokens_between": only_probe_tokens_between,
-}
-
-
-generations_table = None
-# Initialize wandb
-use_wandb = True  # Set to False to disable wandb logging
-if use_wandb:
-    import wandb
-    import datetime
+for step in probe_lora_steps:
+    print(f"\nEvaluating probe and lora at step {step}")
     
-    # Log hyperparameters
-    config = {
-        "n_steps": n_steps,
-        "batch_size": batch_size,
-        "pgd_iterations": pgd_iterations,
-        "adversary_lr": adversary_lr,
-        "epsilon": epsilon,
-        "towards_loss_coef": towards_loss_coef,
-        "probe_loss_coef": probe_loss_coef,
-        "adversary_type": adversary_type,
-        "gradient_accumulation_steps": gradient_accumulation_steps,
+    # Load LORA model for this step
+    lora_model_path = f"{lora_model_dir}/lora_model_step_{step}"
+    lora_model = PeftModel.from_pretrained(encoder.model, lora_model_path, is_trainable=False)
+    encoder.model.eval()
+
+    # Load probes for this step
+    probes_path = f"{lora_model_dir}/probes_step_{step}.pt"
+    probes = torch.load(probes_path, weights_only=False)
+    for probe in probes.values():
+        probe.eval()
+
+    n_steps = 4096
+    batch_size = 2
+    pgd_iterations = 1
+    adversary_lr = 1e-3
+    epsilon = 10
+    towards_loss_coef = 1.0
+    probe_loss_coef = 1.0
+    probes = probes
+    adversaries = wrappers = None
+    run_softprompt_eval_every = 128_000
+    checkpoint_every = 128
+    checkpoint_dir = "checkpoints/adversaries"
+    gradient_accumulation_steps = 8
+    adversary_type = "pgd"
+
+    # Create checkpoint directory if it doesn't exist
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    softprompt_evals_data={
+        "test_negative_examples": split_jailbreaks_dataset.examples_good.val,
+        "test_positive_examples": split_jailbreaks_dataset.examples_bad.val,
+        "test_positive_prompts": split_jailbreaks_dataset.prompts_only_bad.val,
+        "only_return_on_tokens_between": only_return_on_tokens_between,
+        "only_choose_prompt_tokens_between": only_choose_prompt_tokens_between,
+        "only_probe_tokens_between": only_probe_tokens_between,
     }
-    
-    wandb.init(
-        project="probe-attack",
-        name=f"attack_run_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}", 
-        config=config
-    )
-    # Create new table
-    generations_table = wandb.Table(columns=["prompt", 
-    "response"])
 
-pbar = tqdm(total=n_steps, desc="Attacking LORA+Probe")
-total_flops = 0
+    generations_table = None
+    # Initialize wandb
+    use_wandb = True  # Set to False to disable wandb logging
+    if use_wandb:
+        import wandb
+        import datetime
+        
+        # Log hyperparameters
+        config = {
+            "probe_lora_step": step,
+            "n_steps": n_steps,
+            "batch_size": batch_size,
+            "pgd_iterations": pgd_iterations,
+            "adversary_lr": adversary_lr,
+            "epsilon": epsilon,
+            "towards_loss_coef": towards_loss_coef,
+            "probe_loss_coef": probe_loss_coef,
+            "adversary_type": adversary_type,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+        }
+        
+        wandb.init(
+            project="probe-attack",
+            name=f"attack_run_step_{step}_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}", 
+            config=config
+        )
+        # Create new table
+        generations_table = wandb.Table(columns=["prompt", "response"])
 
-# Append header and null row to losses.csv if it doesn't exist
-import os
-if not os.path.exists('losses.csv'):
-    with open('losses.csv', 'a', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['toward', 'probe', 'total', 'step_flops', 'cumulative_flops'])
-        writer.writerow([None, None, None, None, None])
+    pbar = tqdm(total=n_steps, desc=f"Attacking LORA+Probe Step {step}")
+    total_flops = 0
 
-while continue_training_next_epoch:
-    # Shuffle the examples
-    perm = torch.randperm(n_examples)
+    # Append header and null row to losses.csv if it doesn't exist
+    import os
+    if not os.path.exists('losses.csv'):
+        with open('losses.csv', 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['probe_lora_step', 'toward', 'probe', 'total', 'step_flops', 'cumulative_flops'])
+            writer.writerow([None, None, None, None, None, None])
 
-    for i in range(0, n_examples, batch_size):
-        # Check if the batch is the last one
-        if i + batch_size > n_examples:
-            break
+    continue_training_next_epoch = True
+    step_count = 0
 
-        # Get the batch
-        batch_perm = perm[i : i + batch_size]
-        pos_batch_input_ids = positive_input_ids[batch_perm].to(device)
-        pos_batch_attention_mask = positive_attention_mask[batch_perm].to(device)
-        # neg_batch_input_ids = negative_input_ids[batch_perm].to(device)
-        # neg_batch_attention_mask = negative_attention_mask[batch_perm].to(device)
-        pos_batch_zero_mask = zero_positive_mask[batch_perm].to(device).bool()
-        # neg_batch_zero_mask = zero_negative_mask[batch_perm].to(device).bool()
-        # Get probe masks for the batch
-        pos_batch_probe_mask = probe_positive_mask[batch_perm].to(device).bool()
-        # neg_batch_probe_mask = probe_negative_mask[batch_perm].to(device).bool()
+    while continue_training_next_epoch:
+        perm = torch.randperm(n_examples)
 
-        # Calculate tokens processed in this batch
-        pos_tokens = pos_batch_input_ids.shape[0] * pos_batch_input_ids.shape[1]
-        # neg_tokens = neg_batch_input_ids.shape[0] * neg_batch_input_ids.shape[1]
-        # batch_tokens = pos_tokens + neg_tokens
-        batch_tokens = pos_tokens
+        for i in range(0, n_examples, batch_size):
+            if i + batch_size > n_examples:
+                break
 
-        if pos_only_choose_mask is not None:
-            pos_batch_only_choose_mask = (
-                pos_only_choose_mask[batch_perm].to(device).bool()
-            )
+            batch_perm = perm[i : i + batch_size]
+            pos_batch_input_ids = positive_input_ids[batch_perm].to(device)
+            pos_batch_attention_mask = positive_attention_mask[batch_perm].to(device)
+            pos_batch_zero_mask = zero_positive_mask[batch_perm].to(device).bool()
+            pos_batch_probe_mask = probe_positive_mask[batch_perm].to(device).bool()
 
-        # Forward pass on positive examples
-        with torch.autocast(device_type=device):
-            import csv
+            pos_tokens = pos_batch_input_ids.shape[0] * pos_batch_input_ids.shape[1]
+            batch_tokens = pos_tokens
 
-            # Run attack
-            # losses, adversaries, wrappers = train_attack(
-            losses, adversaries, wrappers = train_attack(
-                adv_tokens=pos_batch_input_ids,
-                prompt_mask=pos_batch_only_choose_mask,
-                target_mask=pos_batch_zero_mask,
-                model=lora_model,
-                tokenizer=encoder.tokenizer,
-                model_layers_module="base_model.model.model.layers",
-                layer=["embedding"],
-                epsilon=epsilon,
-                learning_rate=adversary_lr,
-                pgd_iterations=pgd_iterations,
-                # n_steps=n_steps,
-                probes=probes,
-                probe_mask=pos_batch_probe_mask,  # Pass probe mask
-                adversary_type=adversary_type,
-                return_loss_over_time=False,
-                adversaries=adversaries,
-                wrappers=wrappers,
-                # optim_step=step_count % n_grad_accum == 0,
-                optim_step=True,
-                initial_soft_prompt_text=initial_soft_prompt_text,
-                towards_loss_coef=towards_loss_coef,
-                probe_loss_coef=probe_loss_coef,
-            )
+            if pos_only_choose_mask is not None:
+                pos_batch_only_choose_mask = (
+                    pos_only_choose_mask[batch_perm].to(device).bool()
+                )
 
+            with torch.autocast(device_type=device):
+                import csv
+
+                losses, adversaries, wrappers = train_attack(
+                    adv_tokens=pos_batch_input_ids,
+                    prompt_mask=pos_batch_only_choose_mask,
+                    target_mask=pos_batch_zero_mask,
+                    model=lora_model,
+                    tokenizer=encoder.tokenizer,
+                    model_layers_module="base_model.model.model.layers",
+                    layer=["embedding"],
+                    epsilon=epsilon,
+                    learning_rate=adversary_lr,
+                    pgd_iterations=pgd_iterations,
+                    probes=probes,
+                    probe_mask=pos_batch_probe_mask,
+                    adversary_type=adversary_type,
+                    return_loss_over_time=False,
+                    adversaries=adversaries,
+                    wrappers=wrappers,
+                    optim_step=True,
+                    initial_soft_prompt_text=initial_soft_prompt_text,
+                    towards_loss_coef=towards_loss_coef,
+                    probe_loss_coef=probe_loss_coef,
+                )
+
+                total_flops += losses['flops']
+
+                with open('losses.csv', 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        step,
+                        losses['toward'],
+                        losses['probe'], 
+                        losses['total'],
+                        losses['flops'],
+                        total_flops
+                    ])
+
+                if use_wandb:
+                    wandb.log({
+                        "train/toward_loss": losses['toward'],
+                        "train/probe_loss": losses['probe'],
+                        "train/total_loss": losses['total'],
+                        "train/step_flops": losses['flops'],
+                        "train/cumulative_flops": total_flops,
+                        "step": step_count
+                    })
 
             # Checkpoint adversaries and wrappers
             if step_count % checkpoint_every == 0:
-                checkpoint = {
-                    'step': step_count,
+                checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_probe_step_{step}_adversary_{step_count}.pt")
+                torch.save({
                     'adversaries': adversaries,
                     'wrappers': wrappers,
-                    'total_flops': total_flops
-                }
-                checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_step_{step_count}.pt')
-                torch.save(checkpoint, checkpoint_path)
-                print(f"Saved checkpoint to {checkpoint_path}")
+                    'step': step_count
+                }, checkpoint_path)
 
-            # Update total flops
-            total_flops += losses['flops']
+            step_count += 1
+            if n_steps is not None and step_count > n_steps:
+                continue_training_next_epoch = False
+                break
+            pbar.update(1)
+        else:
+            continue
 
-            # Append losses to CSV
-            with open('losses.csv', 'a', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    losses['toward'],
-                    losses['probe'], 
-                    losses['total'],
-                    losses['flops'],
-                    total_flops
-                ])
-
-            # Log metrics to wandb
-            if use_wandb:
-                wandb.log({
-                    "train/toward_loss": losses['toward'],
-                    "train/probe_loss": losses['probe'],
-                    "train/total_loss": losses['total'],
-                    "train/step_flops": losses['flops'],
-                    "train/cumulative_flops": total_flops,
-                    "step": step_count
-                })
-
-            # print(losses)
-        step_count += 1
-        # continue_training_next_epoch = False
-        # break
-        if n_steps is not None and step_count > n_steps:
-            continue_training_next_epoch = False
-            break
-        pbar.update(1)
-    else:
-        continue
-
+    # Finish wandb run for this step
+    if use_wandb:
+        wandb.finish()
 # %%
-# # Load latest checkpoint if it exists
-# latest_checkpoint = None
-# latest_step = -1
-# for filename in os.listdir(checkpoint_dir):
-#     if filename.startswith('checkpoint_step_') and filename.endswith('.pt'):
-#         step = int(filename.split('_')[-1].split('.')[0])
-#         if step > latest_step:
-#             latest_step = step
-#             latest_checkpoint = filename
-
-# latest_checkpoint = "checkpoint_step_3968"
-# if latest_checkpoint is not None:
-#     checkpoint_path = os.path.join(checkpoint_dir, latest_checkpoint)
-#     checkpoint = torch.load(checkpoint_path)
-#     step_count = checkpoint['step']
-#     adversaries = checkpoint['adversaries'] 
-#     wrappers = checkpoint['wrappers']
-#     total_flops = checkpoint['total_flops']
-#     print(f"Loaded checkpoint from {checkpoint_path}")
-
 print("RUNNING SOFTPROMPT EVALUATION")
 results = benchmark_obfuscated_softprompt(
     model=lora_model,
