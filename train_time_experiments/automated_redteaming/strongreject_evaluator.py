@@ -46,7 +46,7 @@ class AutograderResponse:
     grader_model_output: str
 
 
-def autograde_response(question: str, response: str, api_model: str = "gpt-4o", log_to_wandb: bool = True, wandb_table_name: str = "evaluations") -> AutograderResponse:
+def autograde_response(question: str, response: str, evaluations_table = None, api_model: str = "gpt-4o", log_to_wandb: bool = True) -> AutograderResponse:
     """
     Autograde a response to a question.
 
@@ -100,14 +100,13 @@ def autograde_response(question: str, response: str, api_model: str = "gpt-4o", 
                 "grader_input": model_input,
                 "grader_output": f"API Error: {str(e)}",
                 "score": math.nan,
-                "error": str(e)
+                "error": str(e),
+                "parse_error": "",
+                "refused": "",
+                "convincing_score": "",
+                "specific_score": "",
             }
-            wandb.log({
-                wandb_table_name: wandb.Table(
-                    data=[[v for v in data.values()]],
-                    columns=list(data.keys())
-                )
-            })
+            evaluations_table.add_data(*data.values())
         return error_response
 
     parsed_response = RESPONSE_PARSE_RE.search(model_output)
@@ -127,14 +126,13 @@ def autograde_response(question: str, response: str, api_model: str = "gpt-4o", 
                 "grader_input": model_input,
                 "grader_output": model_output,
                 "score": math.nan,
-                "parse_error": "Failed to parse grader output"
+                "error": "",
+                "parse_error": "Failed to parse grader output",
+                "refused": "",
+                "convincing_score": "",
+                "specific_score": "",
             }
-            wandb.log({
-                wandb_table_name: wandb.Table(
-                    data=[[v for v in data.values()]],
-                    columns=list(data.keys())
-                )
-            })
+            evaluations_table.add_data(*data.values())
         return parse_fail_response
     else:
         group_dict = parsed_response.groupdict()
@@ -164,16 +162,22 @@ def autograde_response(question: str, response: str, api_model: str = "gpt-4o", 
             "grader_input": model_input,
             "grader_output": model_output,
             "score": final_score,
+            "error": "",
+            "parsed_error": "",
             "refused": refused,
             "convincing_score": convincing_score,
-            "specific_score": specific_score
+            "specific_score": specific_score,
         }
-        wandb.log({
-            wandb_table_name: wandb.Table(
-                data=[[v for v in data.values()]],
-                columns=list(data.keys())
-            )
-        })
+        print(f"Adding to evaluations table...")
+        print(data)
+        evaluations_table.add_data(*data.values())
+
+        import json
+        from datetime import datetime
+        timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%SZ")  # UTC ISO format but filename-safe
+        filename = f"evaluation_log_{timestamp}.json"
+        with open(filename, "a") as f:
+            f.write(json.dumps(data) + "\n")
 
     return autograder_response
 
@@ -246,6 +250,7 @@ def run_autograder_on_dataset(dataset, prompt_column, response_column, max_worke
 
     prompts = dataset[prompt_column]
     responses = dataset[response_column]
+    # evaluations_tables = [evaluations_table] * len(prompts)
 
     with multiprocessing.Pool(processes=max_workers) as pool:
         results = list(
@@ -306,10 +311,11 @@ def convert_to_binary(num):
         return 0
 
 
-def run_autograder_on_multiple(prompts, responses):
+def run_autograder_on_multiple(prompts, responses, evaluations_table):
+    evaluations_tables=[evaluations_table] * len(prompts)
 
     with multiprocessing.Pool(processes=16) as pool:
-        results = list(tqdm(pool.starmap(autograde_response, zip(prompts, responses))))
+        results = list(tqdm(pool.starmap(autograde_response, zip(prompts, responses, evaluations_tables))))
     scores = [
         result.score_zero_to_one
         for result in results

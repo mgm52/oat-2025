@@ -24,3 +24,4 @@ ipykernel
 ipywidgets
 # pytorch_memlab
 dataclasses-json
+python-dotenv
