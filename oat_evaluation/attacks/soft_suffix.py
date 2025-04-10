@@ -29,7 +29,7 @@ class SoftSuffixAttack(Attack):
         # Helper function to generate responses with the suffix
         def generate_responses_with_suffix(prompt_embeddings: List[torch.Tensor], suffix: torch.Tensor) -> Tuple[LLMResponses, List[torch.Tensor]]:
             new_prompt_embeddings = [torch.cat([p, suffix]) for p in prompt_embeddings]
-            new_responses = llm.generate_responses(new_prompt_embeddings)
+            new_responses = llm.generate_responses(new_prompt_embeddings, probe_to_obfuscate.activation_extraction_request if probe_to_obfuscate is not None else None)
             return new_responses, new_prompt_embeddings
 
         # Train the attack!
@@ -44,6 +44,10 @@ class SoftSuffixAttack(Attack):
 
             # Get the loss (CE between the probabilities and the target harmful embeddings)
             loss = sum([torch.nn.functional.cross_entropy(p, r) for p, r in zip(new_probs, harmful_embeddings)])
+
+            if probe_to_obfuscate is not None:
+                probe_scores = probe_to_obfuscate.compute_scores(new_responses)
+                loss += sum(probe_scores) / len(probe_scores)
 
             # Backpropagate the loss
             loss.backward()
