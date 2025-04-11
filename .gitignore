@@ -1,2 +1,3 @@
 .venv
 repo.txt
+__pycache__

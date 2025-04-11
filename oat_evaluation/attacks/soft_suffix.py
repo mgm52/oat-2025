@@ -40,10 +40,12 @@ class SoftSuffixAttack(Attack):
             # Generate the responses with the suffix
             new_responses, _ = generate_responses_with_suffix(prompt_embeddings, suffix)
             new_logits = new_responses.responses_logits
-            new_probs = [torch.softmax(l, dim=-1) for l in new_logits]
+            new_probs = torch.softmax(new_logits, dim=-1)
+
+            new_probs_as_list = [new_probs[i, :, :] for i in range(new_probs.shape[0])]
 
             # Get the loss (CE between the probabilities and the target harmful embeddings)
-            loss = sum([torch.nn.functional.cross_entropy(p, r) for p, r in zip(new_probs, harmful_embeddings)])
+            loss = sum([torch.nn.functional.cross_entropy(p, r) for p, r in zip(new_probs_as_list, harmful_embeddings)])
 
             if probe_to_obfuscate is not None:
                 probe_scores = probe_to_obfuscate.compute_scores(new_responses)

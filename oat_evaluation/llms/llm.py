@@ -10,12 +10,13 @@ class TokenSelectionMethod(Enum):
     LAST_USER_TOKEN = "last_user_token"
 
 class ExposedActivationsRequest():
+    # TODO: add argument for funcions to run over extracted layers during forward pass (via hooks)
     def __init__(self, extract_layers_indices: List[int], token_selection_method: TokenSelectionMethod):
         self.extract_layers_indices = extract_layers_indices
         self.token_selection_method = token_selection_method
 
 class LLMResponses():
-    def __init__(self, responses_strings: List[str], responses_logits: List[torch.Tensor], activation_layers: List[List[torch.Tensor]]):
+    def __init__(self, responses_strings: List[str], responses_logits: torch.Tensor, activation_layers: List[torch.Tensor]):
         """
         Initialize LLMResponses with generated responses, logits, and activation layers.
         
@@ -23,11 +24,10 @@ class LLMResponses():
             responses_strings: List of generated response strings, length = batch_size
             responses_logits: Tensor of shape (batch_size, sequence_length, vocab_size) containing logits
             activation_layers: List of activation tensors organized as:
-                - Outer list: length = batch_size (one entry per prompt)
-                - Inner list: length = num_layers (one entry per requested layer)
-                - Each tensor: shape = (extraction_length, hidden_size), where:
-                  * extraction_length = 1 for LAST_RESPONSE_TOKEN/LAST_USER_TOKEN
-                  * extraction_length = sequence_length for ALL_RESPONSE
+                - Inner list: length = num_req_layers (one entry per requested layer)
+                - Each tensor: shape = (batch_size, num_req_tokens, hidden_size), where:
+                  * num_req_tokens = 1 for LAST_RESPONSE_TOKEN/LAST_USER_TOKEN
+                  * num_req_tokens = sequence_length for ALL_RESPONSE
         """
         self.responses_strings = responses_strings
         self.responses_logits = responses_logits
@@ -88,6 +88,12 @@ class LLM(ABC):
 
     @property
     @abstractmethod
+    def num_layers(self) -> int:
+        """The number of layers in the model (specifically, the max number of activation layers to extract)"""
+        pass
+
+    @property
+    @abstractmethod
     def vocab_size(self) -> int:
         """The size of the vocabulary of the model (number of possible tokens, i.e. number of columns in the logits tensor)"""
         pass
@@ -96,3 +102,7 @@ class LLM(ABC):
     def name(self) -> str:
         """The name of the model"""
         return self.__class__.__name__
+
+    # TODO: consider how to support attacks injected into activation space...
+    # We'll need to be able to extract activations, give them to an arbitrary attack function, then continue generation....
+    # I expect we can just add a sort of "hooks" feature into ActivationRequest ?!!????!!!!
