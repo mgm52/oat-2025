@@ -99,6 +99,12 @@ class LLM(ABC):
         pass
 
     @property
+    @abstractmethod
+    def embedding_size(self) -> int:
+        """The number of columns in embedding tensors"""
+        pass
+
+    @property
     def name(self) -> str:
         """The name of the model"""
         return self.__class__.__name__
