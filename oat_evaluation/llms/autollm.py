@@ -107,36 +107,14 @@ class AutoLLM(LLM):
             return_dict=True
         ).to(self._model.device)
 
-        print(f"Tokenized chat: {tokenized_chat}")
-        if isinstance(tokenized_chat, torch.Tensor):
-            print(f"Tokenized chat is a tensor of shape {tokenized_chat.shape}")
-
-        try:
-            print(f"Tokenized chat['input_ids'] (shape {tokenized_chat['input_ids'].shape}): {tokenized_chat['input_ids']}")
-        except Exception as e:
-            print(f"Error trying to print tokenized chat['input_ids']: {e}")
-
         with add_fwd_hooks(fwd_extraction_hooks):
             outputs = self._model.generate(tokenized_chat['input_ids'], output_scores=True, return_dict_in_generate=True)
 
-        print(f"Outputs: {outputs}")
-        if isinstance(outputs, torch.Tensor):
-            print(f"Outputs is a tensor of shape {outputs.shape}")
-
-        # Slice out just the newly generated tokens, then decode to text
-        try:
-            start_length = tokenized_chat["input_ids"].shape[1]
-            decoded_responses = [
-                self._tokenizer.decode(seq[start_length:], skip_special_tokens=True)
-                for seq in outputs.sequences
-            ]
-        except Exception as e:
-            print(f"Error trying to extract start length: {e}")
-            decoded_responses = [
-                self._tokenizer.decode(outputs.sequences, skip_special_tokens=True)
-            ]
-
-        print(f"Decoded responses: {decoded_responses}")
+        start_length = tokenized_chat["input_ids"].shape[1]
+        decoded_responses = [
+            self._tokenizer.decode(seq[start_length:], skip_special_tokens=True)
+            for seq in outputs.sequences
+        ]
 
         return LLMResponses(
             responses_strings=decoded_responses,
@@ -240,8 +218,72 @@ class AutoLLM(LLM):
         Returns:
             LLMResponses containing the generated responses, their logits, and the extracted activation layers.
         """
-        # Make sure to move any tokenized inputs to the model's device
-        raise NotImplementedError("Not implemented")
+
+        raise NotImplementedError("This function is not fully implemented yet...")
+
+        # Set up hooks for extracting activations
+        if exposed_activations_request:
+            target_layers = exposed_activations_request.extract_layers_indices
+            activations_list = [[torch.zeros(1) for _ in target_layers] for _ in prompts]
+            fwd_extraction_hooks = [(
+                    self._model_block_modules[layer],
+                    activation_extraction_hook(destination=activations_list, index=i)
+                ) for i, layer in enumerate(target_layers)
+            ]
+        else:
+            fwd_extraction_hooks = []
+
+        if isinstance(prompts_or_embeddings[0], str):
+            # Add special token chat template & padding!
+            messages = [
+                [{"role": "user", "content": prompt}]
+                for prompt in prompts_or_embeddings
+            ]
+            tokenized_chat = self._tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                padding=True,
+                return_tensors="pt",
+                return_dict=True
+            ).to(self._model.device)
+
+            with add_fwd_hooks(fwd_extraction_hooks):
+                outputs = self._model.forward(tokenized_chat['input_ids'], output_scores=True, return_dict_in_generate=True)
+        else:
+            chat_embeddings = [self._embeddings_to_chat_embeddings(embed) for embed in prompts_or_embeddings]
+            print(f"Chat embeddings: {chat_embeddings}")
+            chat_embeddings_tensor = self._left_pad_embeddings(chat_embeddings)
+            print(f"Chat embeddings tensor: {chat_embeddings_tensor}")
+
+            with add_fwd_hooks(fwd_extraction_hooks):
+                outputs = self._model.forward(chat_embeddings_tensor, output_scores=True, return_dict_in_generate=True)
+
+        print(f"Outputs: {outputs}")
+        if isinstance(outputs, torch.Tensor):
+            print(f"Outputs is a tensor of shape {outputs.shape}")
+
+        # Slice out just the newly generated tokens, then decode to text
+        try:
+            start_length = tokenized_chat["input_ids"].shape[1]
+            decoded_responses = [
+                self._tokenizer.decode(seq[start_length:], skip_special_tokens=True)
+                for seq in outputs.sequences
+            ]
+        except Exception as e:
+            print(f"Error trying to extract start length: {e}")
+            decoded_responses = [
+                self._tokenizer.decode(outputs.sequences, skip_special_tokens=True)
+            ]
+
+        print(f"Decoded responses: {decoded_responses}")
+
+        return LLMResponses(
+            responses_strings=decoded_responses,
+            responses_logits=outputs.scores,
+            activation_layers=activations_list if exposed_activations_request else None
+        )
+
 
     def string_to_embedding(self, string: str) -> torch.Tensor:
         """Converts a prompt/response string to a "naked" embedding tensor. i.e. Does not add any special tokens or padding."""
