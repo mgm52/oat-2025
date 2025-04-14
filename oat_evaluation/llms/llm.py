@@ -83,7 +83,12 @@ class LLM(ABC):
 
     @abstractmethod
     def string_to_embedding(self, string: str) -> torch.Tensor:
-        """Converts a prompt/response string to a "naked" embedding tensor. i.e. Does not add any special tokens or padding."""
+        """Converts a prompt/response string to a "naked" embedding tensor. i.e. Does not add any special tokens or padding. Returns shape (1, seq_len, embedding_size)."""
+        pass
+
+    @abstractmethod
+    def string_to_token_ids(self, input_string):
+        """Output shape (batch_size, seq_len)"""
         pass
 
     @property

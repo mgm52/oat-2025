@@ -3,7 +3,8 @@ from enum import Enum
 from typing import List, Dict, Any, Optional, Tuple, Union
 
 import torch
-from oat_evaluation.attacks.attack import Attack, AttackDetails
+import tqdm
+from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
 
@@ -21,20 +22,21 @@ class SoftSuffixAttack(Attack):
         probe_to_obfuscate: Optional[Probe] = None
     ) -> Tuple[LLMResponses, AttackDetails]:
         
-        # Start with a random suffix (shape (suffix_length, vocab_size))
-        suffix = torch.randn(self.suffix_length, llm.vocab_size)
+        # Start with a random suffix (shape (suffix_length, embedding_size))
+        suffix = torch.randn(self.suffix_length, llm.embedding_size, requires_grad=True)
         prompt_embeddings = [llm.string_to_embedding(p) for p in prompts]
         harmful_embeddings = [llm.string_to_embedding(r) for r in harmful_responses]
+        harmful_token_ids = [llm.string_to_token_ids(r) for r in harmful_responses]
 
         # Helper function to generate responses with the suffix
         def generate_responses_with_suffix(prompt_embeddings: List[torch.Tensor], suffix: torch.Tensor) -> Tuple[LLMResponses, List[torch.Tensor]]:
             new_prompt_embeddings = [torch.cat([p, suffix]) for p in prompt_embeddings]
-            new_responses = llm.generate_responses(new_prompt_embeddings, probe_to_obfuscate.activation_extraction_request if probe_to_obfuscate is not None else None)
+            new_responses = llm.generate_responses_forced(new_prompt_embeddings, probe_to_obfuscate.activation_extraction_request if probe_to_obfuscate is not None else None)
             return new_responses, new_prompt_embeddings
 
         # Train the attack!
-        optimizer = torch.optim.Adam(suffix.flatten(), lr=self.learning_rate)
-        for _ in range(self.training_steps):
+        optimizer = torch.optim.Adam([suffix], lr=self.learning_rate)
+        for _ in tqdm.tqdm(range(self.training_steps)):
             optimizer.zero_grad()
 
             # Generate the responses with the suffix
@@ -45,7 +47,7 @@ class SoftSuffixAttack(Attack):
             new_probs_as_list = [new_probs[i, :, :] for i in range(new_probs.shape[0])]
 
             # Get the loss (CE between the probabilities and the target harmful embeddings)
-            loss = sum([torch.nn.functional.cross_entropy(p, r) for p, r in zip(new_probs_as_list, harmful_embeddings)])
+            loss = sum([torch.nn.functional.cross_entropy(p, r) for p, r in zip(new_probs_as_list, harmful_token_ids)])
 
             if probe_to_obfuscate is not None:
                 probe_scores = probe_to_obfuscate.compute_scores(new_responses)
@@ -58,3 +60,18 @@ class SoftSuffixAttack(Attack):
         # Return the final responses
         final_responses, final_prompt_embeddings = generate_responses_with_suffix(prompt_embeddings, suffix)
         return final_responses, AttackDetails(generated_embedding_prompts=final_prompt_embeddings)
+
+    @property
+    def is_universal(self) -> bool:
+        """Whether this attack is universal or per-prompt."""
+        return True
+
+    @property
+    def box_requirement(self) -> BoxRequirement:
+        """Whether this attack is white-box (activations) / black-box (tokens) / gray-box (logits)."""
+        return BoxRequirement.WHITE_BOX
+
+    @property
+    def can_perform_obfuscation(self) -> bool:
+        """Whether this attack can perform probe-obfuscation."""
+        return True
