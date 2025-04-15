@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import Callable, List, Dict, Any, Optional, Tuple, Union
 
 import torch
 
@@ -16,18 +16,19 @@ class ExposedActivationsRequest():
         self.token_selection_method = token_selection_method
 
 class LLMResponses():
-    def __init__(self, responses_strings: List[str], responses_logits: torch.Tensor, activation_layers: List[torch.Tensor]):
+    def __init__(self, responses_strings: List[str], responses_logits: List[torch.Tensor], activation_layers: List[List[torch.Tensor]]):
         """
         Initialize LLMResponses with generated responses, logits, and activation layers.
         
         Args:
             responses_strings: List of generated response strings, length = batch_size
-            responses_logits: Tensor of shape (batch_size, sequence_length, vocab_size) containing logits
+            responses_logits: List of tensors of shape (sequence_length, vocab_size) containing logits, length = batch_size
             activation_layers: List of activation tensors organized as:
                 - Inner list: length = num_req_layers (one entry per requested layer)
-                - Each tensor: shape = (batch_size, num_req_tokens, hidden_size), where:
+                - Inner inner list: length = num_req_tokens (one entry per requested token), where:
                   * num_req_tokens = 1 for LAST_RESPONSE_TOKEN/LAST_USER_TOKEN
                   * num_req_tokens = sequence_length for ALL_RESPONSE
+                - Each tensor: shape = (batch_size, hidden_size)
         """
         self.responses_strings = responses_strings
         self.responses_logits = responses_logits
@@ -46,7 +47,8 @@ class LLM(ABC):
     def generate_responses(
         self,
         prompts_or_embeddings: Union[List[str], List[torch.Tensor]],
-        exposed_activations_request: Optional[ExposedActivationsRequest] = None
+        exposed_activations_request: Optional[ExposedActivationsRequest] = None,
+        max_new_tokens: int = 64
     ) -> LLMResponses:
         """
         Generate responses for the given prompts using the model.
@@ -54,6 +56,7 @@ class LLM(ABC):
         Args:
             prompts_or_embeddings: The prompts to generate responses for, as a list of strings or a tensor of embeddings
             exposed_activations_request: Request specifying which activation layers to extract
+            max_new_tokens: Maximum number of tokens to generate
             
         Returns:
             LLMResponses containing the generated responses, their logits, and the extracted activation layers.
@@ -65,16 +68,18 @@ class LLM(ABC):
         self,
         prompts_or_embeddings: Union[List[str], List[torch.Tensor]],
         target_responses_or_embeddings: Union[List[str], List[torch.Tensor]],
-        exposed_activations_request: Optional[ExposedActivationsRequest] = None
+        exposed_activations_request: Optional[ExposedActivationsRequest] = None,
+        add_response_ending: bool = False
     ) -> LLMResponses:
         """
         Generate responses for the given prompts using the model, while forcing the outputs.
         This function is useful for extracting activations & logits for a target response, e.g. for soft-suffix attacks.
         
         Args:
-            prompts_or_embeddings: The prompts to generate responses for, as a list of strings or of naked embeddings (i.e. no special tokens or padding)
-            target_responses_or_embeddings: The target responses to force the model to generate
+            prompts_or_embeddings: The prompts to generate responses for, as a list of strings or of naked embeddings (i.e. no special tokens or padding). Each of shape (seq_len (varying), embedding_size), or a string.
+            target_responses_or_embeddings: The target responses to force the model to generate. Each of shape (seq_len (varying), embedding_size), or a string.
             exposed_activations_request: Request specifying which activation layers to extract
+            add_response_ending: Whether to add the response ending token
             
         Returns:
             LLMResponses containing the generated responses, their logits, and the extracted activation layers.
@@ -83,12 +88,21 @@ class LLM(ABC):
 
     @abstractmethod
     def string_to_embedding(self, string: str) -> torch.Tensor:
-        """Converts a prompt/response string to a "naked" embedding tensor. i.e. Does not add any special tokens or padding. Returns shape (1, seq_len, embedding_size)."""
+        """Converts a prompt/response string to a "naked" embedding tensor. i.e. Does not add any special tokens or padding. Returns shape (seq_len, embedding_size)."""
         pass
 
     @abstractmethod
-    def string_to_token_ids(self, input_string):
-        """Output shape (batch_size, seq_len)"""
+    def string_to_token_ids(self, input_string: str, add_response_ending: bool = False) -> torch.Tensor:
+        """
+        Convert a string to token IDs.
+        
+        Args:
+            input_string: The string to tokenize
+            add_response_ending: Whether to add response ending tokens
+            
+        Returns:
+            Tensor of shape (seq_len)
+        """
         pass
 
     @property
@@ -107,6 +121,18 @@ class LLM(ABC):
     @abstractmethod
     def embedding_size(self) -> int:
         """The number of columns in embedding tensors"""
+        pass
+
+    @property
+    @abstractmethod
+    def device(self) -> torch.device:
+        """The device of the model"""
+        pass
+
+    @property
+    @abstractmethod
+    def dtype(self) -> torch.dtype:
+        """The dtype of the model"""
         pass
 
     @property
