@@ -17,6 +17,8 @@ pip install matplotlib
 pip install seaborn
 pip install wandb
 pip install numpy==1.26.4
+pip install git+https://github.com/dsbowen/strong_reject.git@main
+
 # sudo apt-get install python-tk python3-tk tk-dev
 # huggingface-cli login
 # wandb login

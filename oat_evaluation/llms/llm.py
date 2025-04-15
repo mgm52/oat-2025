@@ -24,11 +24,9 @@ class LLMResponses():
             responses_strings: List of generated response strings, length = batch_size
             responses_logits: List of tensors of shape (sequence_length, vocab_size) containing logits, length = batch_size
             activation_layers: List of activation tensors organized as:
-                - Inner list: length = num_req_layers (one entry per requested layer)
-                - Inner inner list: length = num_req_tokens (one entry per requested token), where:
-                  * num_req_tokens = 1 for LAST_RESPONSE_TOKEN/LAST_USER_TOKEN
-                  * num_req_tokens = sequence_length for ALL_RESPONSE
-                - Each tensor: shape = (batch_size, hidden_size)
+                - Inner list: length = batch_size 
+                - Inner inner list: length = num_req_layers
+                - Each tensor: shape = (num_req_tokens, hidden_size)
         """
         self.responses_strings = responses_strings
         self.responses_logits = responses_logits
@@ -36,11 +34,7 @@ class LLMResponses():
 
     @property
     def batch_size(self) -> int:
-        return max(len(self.responses_strings), self.responses_logits.shape[0])
-
-    @property
-    def activation_layers_indices(self) -> List[int]:
-        return self.activation_layers_indices
+        return max(len(self.responses_strings), len(self.responses_logits))
 
 class LLM(ABC):
     @abstractmethod

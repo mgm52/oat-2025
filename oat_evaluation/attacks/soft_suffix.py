@@ -15,14 +15,15 @@ class SoftSuffixAttack(Attack):
         training_steps: int,
         learning_rate: float,
         epsilon: float = 5.0, # I think default 50.0 in original abhay code
-        debug_mode: bool = False
+        debug_mode: bool = False,
+        chunk_size: int = 4
     ):
         self.suffix_length = suffix_length
         self.training_steps = training_steps
         self.learning_rate = learning_rate
         self.epsilon = epsilon
         self.debug_mode = debug_mode
-
+        self.chunk_size = chunk_size
     def clip_suffix(self, suffix: torch.Tensor, epsilon: float) -> None:
         """Clips the suffix's total L2 norm in-place to be <= epsilon."""
         with torch.no_grad():
@@ -105,11 +106,15 @@ class SoftSuffixAttack(Attack):
 
         # Train the attack!
         optimizer = torch.optim.Adam([suffix], lr=self.learning_rate)
+        chunk_idx = 0
         for _ in tqdm.tqdm(range(self.training_steps)):
             optimizer.zero_grad()
 
+            prompt_chunk = prompt_embeddings[chunk_idx:min(chunk_idx+self.chunk_size, len(prompt_embeddings))]
+            response_chunk = harmful_embeddings[chunk_idx:min(chunk_idx+self.chunk_size, len(harmful_embeddings))]
+
             # Generate the responses with the suffix
-            new_responses, _ = generate_responses_with_suffix(prompt_embeddings, suffix, harmful_embeddings)
+            new_responses, _ = generate_responses_with_suffix(prompt_chunk, suffix, response_chunk)
             new_logits = new_responses.responses_logits
 
             if self.debug_mode:
@@ -131,8 +136,7 @@ class SoftSuffixAttack(Attack):
                 probe_scores = probe_to_obfuscate.compute_scores(new_responses)
                 loss += sum(probe_scores) / len(probe_scores)
 
-            if self.debug_mode:
-                print(f"Loss is {loss}")
+            print(f"Loss={loss}")
 
             # Inside the training loop in run_attack
             loss.backward()
@@ -162,6 +166,10 @@ class SoftSuffixAttack(Attack):
                 # --- Debugging ---
                 print(f"Suffix norm after step/clip: {suffix.norm().item()}")
                 # --- End Debugging ---
+
+            chunk_idx += self.chunk_size
+            if chunk_idx >= len(prompt_embeddings):
+                chunk_idx = 0
         
         # Return the final responses
         final_responses, final_prompt_embeddings = generate_responses_with_suffix(prompt_embeddings, suffix, harmful_embeddings)

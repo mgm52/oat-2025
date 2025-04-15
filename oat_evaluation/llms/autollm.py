@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import collections
 from enum import Enum
 from typing import Callable, List, Dict, Any, Optional, Tuple, Union
 
@@ -24,7 +25,7 @@ def add_fwd_hooks(module_forward_pre_hooks: List[Tuple[torch.nn.Module, Callable
 def activation_extraction_hook(destination: List[List[torch.Tensor]], index: int, debug_mode: bool = False):
     def hook_fn(module, input):
         if debug_mode:
-            print(f"Hook number {index} triggered with input: {input}")
+            print(f"Hook number {index} triggered with input length: {len(input)}, shapes {[i.shape for i in input]}")
         destination[index].append(input[0].detach().clone())
     return hook_fn
 
@@ -88,19 +89,6 @@ class AutoLLM(LLM):
             LLMResponses containing the generated responses, their logits, and the extracted activation layers.
         """
 
-        # Set up hooks for extracting activations
-        if exposed_activations_request:
-            # TODO: filter to exposed_activations_request extraction token type...
-            target_layers = exposed_activations_request.extract_layers_indices
-            activations_list = [[] for _ in target_layers]
-            fwd_extraction_hooks = [(
-                    self._model_block_modules[layer],
-                    activation_extraction_hook(destination=activations_list, index=i, debug_mode=self.debug_mode)
-                ) for i, layer in enumerate(target_layers)
-            ]
-        else:
-            fwd_extraction_hooks = []
-
         if isinstance(prompts[0], str):
             # Add special token chat template & padding!
             messages = [
@@ -119,8 +107,8 @@ class AutoLLM(LLM):
             if self.debug_mode:
                 print(f"About to forward with tokenized_chat: {tokenized_chat}")
                 print(f"About to forward with tokenized_chat.input_ids.shape: {tokenized_chat['input_ids'].shape}")
-            with add_fwd_hooks(fwd_extraction_hooks):
-                outputs = self._model.generate(**tokenized_chat, output_scores=True, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
+            
+            outputs = self._model.generate(**tokenized_chat, output_scores=True, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
 
             start_length = tokenized_chat["input_ids"].shape[1]
             decoded_responses = [
@@ -128,27 +116,16 @@ class AutoLLM(LLM):
                 for seq in outputs.sequences
             ]
 
-            # TODO: consider how to handle padding (where even is it...?)
-            if isinstance(outputs.scores, tuple):
-                if self.debug_mode:
-                    print(f"Outputs.scores is a tuple of length {len(outputs.scores)}, with shapes {[s.shape for s in outputs.scores]}...")
-                # right now, len(scores) = seq_len, and each element is a tensor of shape (batch_size, vocab_size)...
-                # let's convert it to a list of tensors of shape (seq_len, vocab_size) for each batch item
-                batch_size = outputs.scores[0].shape[0]
-                responses_scores = []
-                for batch_idx in range(batch_size):
-                    # Extract scores for this batch item across all sequence positions
-                    batch_scores = torch.stack([score[batch_idx] for score in outputs.scores], dim=0)
-                    responses_scores.append(batch_scores)
-                if self.debug_mode:
-                    print(f"Responses scores are now len {len(responses_scores)}, shapes {[s.shape for s in responses_scores]}")
-            else:
-                raise ValueError("Outputs.scores is not a tuple")
+            forced_responses = self.generate_responses_forced(
+                prompts,
+                decoded_responses,
+                exposed_activations_request=exposed_activations_request
+            )
 
             return LLMResponses(
                 responses_strings=decoded_responses,
-                responses_logits=responses_scores,
-                activation_layers=activations_list if exposed_activations_request else None
+                responses_logits=forced_responses.responses_logits,
+                activation_layers=forced_responses.activation_layers if exposed_activations_request else None
             )
         else:
             # Prompt is an embedding tensor! Manual generation. This will be slow...
@@ -381,16 +358,28 @@ class AutoLLM(LLM):
             assert isinstance(target_responses_or_embeddings[0], str)
 
         # Set up hooks for extracting activations
+        raw_activations_list = [] # Will store list[tensor(batch, seq, hidden)]
+        fwd_extraction_hooks = []
         if exposed_activations_request:
             target_layers = exposed_activations_request.extract_layers_indices
-            activations_list = [[] for _ in target_layers]
+            # Make raw_activations_list the right size initially
+            raw_activations_list = [None] * len(target_layers)
+
+            # Modified hook to place tensor at the correct index
+            def activation_extraction_hook_simple(destination: List[Optional[torch.Tensor]], index: int, debug_mode: bool = False):
+                def hook_fn(module, input):
+                    # Ensure list is mutable if needed (though pre-sized should be ok)
+                    if debug_mode:
+                        print(f"Hook for layer index {index} triggered with input[0] shape: {input[0].shape}")
+                    # Store the *single* full activation tensor for this layer/pass
+                    destination[index] = input[0].detach().clone()
+                return hook_fn
+
             fwd_extraction_hooks = [(
                     self._model_block_modules[layer],
-                    activation_extraction_hook(destination=activations_list, index=i, debug_mode=self.debug_mode)
+                    activation_extraction_hook_simple(destination=raw_activations_list, index=i, debug_mode=self.debug_mode)
                 ) for i, layer in enumerate(target_layers)
             ]
-        else:
-            fwd_extraction_hooks = []
 
         if isinstance(prompts_or_embeddings[0], str):
             # Add special token chat template & padding!
@@ -439,10 +428,13 @@ class AutoLLM(LLM):
         # Now we just need to trim the logits down to the response prediction only...
         if self.debug_mode:
             print(f"Original response lengths: {original_response_lengths}")
+        
+
         trimmed_logits = []
         for i, response_length in enumerate(original_response_lengths):
             response_start = outputs.logits.shape[1]-self._chat_outro.shape[1]-response_length-1
             response_end = outputs.logits.shape[1]-self._chat_outro.shape[1]-1
+
             if add_response_ending:
                 if self.debug_mode:
                     print(f"Althrough ordinarily we'd trim to {response_start}:{response_end}, we're adding the response ending back on, so including all of end except final...")
@@ -455,15 +447,66 @@ class AutoLLM(LLM):
                     print(f"We got response start {response_start} and end {response_end} for response {i} of length {response_length}... So appending logits of shape {response_logits.shape}")
             trimmed_logits.append(response_logits)
         
-        decoded_responses = self._logits_to_strings(torch.stack(trimmed_logits))
+        decoded_responses = [self._logits_to_strings(logit.unsqueeze(0))[0] for logit in trimmed_logits]
 
         if self.debug_mode:
             print(f"Decoded responses: {decoded_responses}")
 
+        # --- Process Activations ---
+        final_activation_layers = None
+        if exposed_activations_request and raw_activations_list and all(t is not None for t in raw_activations_list):
+            # Desired output structure: list[list[tensor(num_tokens, hidden)]]
+            # Outer list: batch_size
+            # Inner list: num_req_layers
+            final_activation_layers = [[] for _ in range(len(prompts_or_embeddings))]
+
+            # raw_activations_list contains tensors of shape (batch, seq, hidden)
+            for layer_idx, full_layer_activation in enumerate(raw_activations_list):
+                 # full_layer_activation shape: (batch_size, activation_seq_len, hidden_size)
+                 activation_seq_len = full_layer_activation.shape[1] # Use actual seq len from activation
+
+                 for batch_idx in range(len(prompts_or_embeddings)):
+                    response_length = original_response_lengths[batch_idx]
+                    # Recalculate start/end based on *activation* sequence length
+                    # NOTE: Activation seq len might differ slightly from logit seq len depending on model/hook timing,
+                    # but often they are the same for pre-hooks. Use the activation tensor's shape.
+                    act_response_start_idx = activation_seq_len - self._chat_outro.shape[1] - response_length - 1
+                    act_response_end_idx = activation_seq_len - self._chat_outro.shape[1] - 1
+
+                    act_slice_start = act_response_start_idx
+                    act_slice_end = act_response_end_idx
+                    if add_response_ending:
+                         act_slice_end = activation_seq_len - 1 # Include tokens for outro
+
+                    # Basic validation for activation slice indices
+                    if act_slice_start < 0 or act_slice_end > activation_seq_len or act_slice_start >= act_slice_end:
+                        print(f"Warning: Invalid activation slice for layer {layer_idx}, batch item {batch_idx}. Start: {act_slice_start}, End: {act_slice_end}, ActSeqLen: {activation_seq_len}, RespLen: {response_length}. Appending empty tensor.")
+                        # Getting hidden size correctly:
+                        hidden_size = full_layer_activation.shape[-1]
+                        final_activation_layers[batch_idx].append(torch.empty((0, hidden_size), dtype=full_layer_activation.dtype, device=full_layer_activation.device))
+                        continue # Skip to next batch item if slice is invalid
+
+                    # Select the slice for this batch item and this layer
+                    token_activations = full_layer_activation[batch_idx, act_slice_start:act_slice_end, :]
+                    # token_activations shape: (num_req_tokens, hidden_size)
+
+                    if self.debug_mode:
+                         print(f"Batch {batch_idx}, Layer {layer_idx}: Activation slice indices [{act_slice_start}:{act_slice_end}] -> shape {token_activations.shape}")
+
+                    # Append to the correct place in the final structure
+                    final_activation_layers[batch_idx].append(token_activations)
+
+            if self.debug_mode:
+                 print(f"Processed activation structure: {len(final_activation_layers)} batch items.")
+                 if final_activation_layers:
+                     print(f"First batch item has {len(final_activation_layers[0])} layers.")
+                     if final_activation_layers[0]:
+                         print(f"First layer tensor shape for first batch item: {final_activation_layers[0][0].shape}")
+
         return LLMResponses(
             responses_strings=decoded_responses,
             responses_logits=trimmed_logits, # list length (batch_size), each element shape (response_length, vocab_size)
-            activation_layers=activations_list if exposed_activations_request else None # list length (num_req_layers), then list (num_req_tokens), then tensor (batch_size, hidden_size)
+            activation_layers=final_activation_layers # list (batch_size) -> list (num_req_layers) -> tensor (num_req_tokens, hidden_size)
         )
 
     def string_to_embedding(self, string: str) -> torch.Tensor:
@@ -515,7 +558,6 @@ class AutoLLM(LLM):
 
 if __name__ == "__main__":
     llm = AutoLLM("/workspace/gemma_2_9b_instruct", debug_mode=True)
-
     prompts = ["How to bake?", "What is 2+2?"]
     responses = ["First, mix the ingredients.", "4"]
 
