@@ -108,7 +108,6 @@ class AbhayCheckpointProbe(Probe):
         # And store them correctly in an nn.ModuleDict for proper parameter registration etc.
         self.probes = nn.ModuleDict()
         extracted_target_layers = []
-        # --- MODIFIED LOOP (Assuming Integer Keys as confirmed previously) ---
         for layer_key, probe_obj in self.loaded_probes.items():
             # Check if the key is an integer (as per user confirmation)
             if isinstance(layer_key, int):
@@ -123,7 +122,6 @@ class AbhayCheckpointProbe(Probe):
             else:
                 # Handle unexpected key types if necessary, or just warn/skip
                 print(f"Warning: Encountered unexpected key type {type(layer_key)} (value: {repr(layer_key)}) in checkpoint dictionary. Expected integer. Skipping probe.")
-        # --- END MODIFIED LOOP ---
 
         if not self.probes:
             raise ValueError("No valid LinearProbe modules found and stored from the loaded checkpoint dictionary.")
@@ -134,7 +132,7 @@ class AbhayCheckpointProbe(Probe):
     def compute_scores(
         self,
         responses: LLMResponses,
-    ) -> List[float]:  # List of length batch_size
+    ) -> List[torch.Tensor]:  # List of length batch_size
         """
         Compute probe scores for the given responses based on the NEW activation structure.
 
@@ -174,7 +172,7 @@ class AbhayCheckpointProbe(Probe):
                  first_layer_tensor = next((t for t in item_activations if isinstance(t, torch.Tensor)), None)
                  if first_layer_tensor is not None:
                       activations_device = first_layer_tensor.device
-                      print(f"Detected activation device: {activations_device}")
+                      #print(f"Detected activation device: {activations_device}")
                       break # Found the device
         if activations_device is None:
              # Fallback: use the device of the first probe if no activations are available
@@ -190,7 +188,7 @@ class AbhayCheckpointProbe(Probe):
         # Move all probes to the determined device once
         try:
             self.probes.to(activations_device)
-            print(f"Moved probes to device: {activations_device}")
+             #print(f"Moved probes to device: {activations_device}")
         except Exception as e:
              print(f"Error moving probes to device {activations_device}: {e}")
              return [float('nan')] * batch_size # Cannot proceed if probes aren't on correct device
@@ -237,27 +235,39 @@ class AbhayCheckpointProbe(Probe):
                  # Move tensor to the correct device if necessary
                  layer_activation_tensor = layer_activation_tensor.to(activations_device)
 
+                 # Get the expected dtype from the probe's parameters
+                 try:
+                    probe_dtype = next(probe.parameters()).dtype
+                 except StopIteration:
+                    # Handle cases where the probe might have no parameters (though unlikely for LinearProbe)
+                    print(f"Warning: Probe for layer {target_layer_index} seems to have no parameters. Cannot determine dtype. Skipping layer.")
+                    item_layer_scores.append(torch.tensor(float('nan'), device=activations_device))
+                    continue
+
+                 # Cast the activation tensor IF its dtype doesn't match the probe's dtype
+                 if layer_activation_tensor.dtype != probe_dtype:
+                    # print(f"Debug: Casting activation tensor for layer {target_layer_index} from {layer_activation_tensor.dtype} to {probe_dtype}") # Optional debug print
+                    try:
+                        layer_activation_tensor = layer_activation_tensor.to(probe_dtype)
+                    except Exception as e_cast:
+                        print(f"Error casting activation tensor for item {batch_idx}, layer {target_layer_index} to {probe_dtype}: {e_cast}")
+                        item_layer_scores.append(torch.tensor(float('nan'), device=activations_device))
+                        continue
+
+
                  # Apply the probe: forward(Tensor(num_tokens, hidden)) -> Tensor(num_tokens)
                  # Note: LinearProbe might expect (batch, seq, hidden). We process item by item,
                  # so we can treat num_tokens as the sequence length. If the probe strictly
                  # needs a batch dim, we might need to unsqueeze/squeeze. Let's assume
                  # the LinearProbe forward handles input shape flexibility or works with (seq, hidden).
                  # If it MUST have batch, use: .unsqueeze(0) for input, .squeeze(0) for output.
-                 try:
-                     probe.eval() # Ensure probe is in eval mode
-                     with torch.no_grad(): # Probing shouldn't require gradients
-                         # Check if probe expects batch dim explicitly (common pattern)
-                         # Let's assume it might, so add/remove batch dim of 1
-                         probe_scores_per_token = probe.forward(layer_activation_tensor.unsqueeze(0)).squeeze(0) # Shape: (num_tokens,)
-                         # If probe handles (seq, hidden) directly, just call:
-                         # probe_scores_per_token = probe.forward(layer_activation_tensor)
-
-                 except Exception as e:
-                      print(f"Error during probe forward pass for item {batch_idx}, layer {target_layer_index}: {e}")
-                      print(f"  Activation tensor shape: {layer_activation_tensor.shape}, device: {layer_activation_tensor.device}")
-                      print(f"  Probe device: {next(probe.parameters()).device}")
-                      item_layer_scores.append(torch.tensor(float('nan'), device=activations_device))
-                      continue
+                 #probe.eval() # Ensure probe is in eval mode
+                 # Check if probe expects batch dim explicitly (common pattern)
+                 # Let's assume it might, so add/remove batch dim of 1
+                 probe_scores_per_token = torch.sigmoid(probe.forward(layer_activation_tensor.unsqueeze(0))).squeeze(0) # Shape: (num_tokens,)
+                 #print(f"Got post-sigmoid probe scores per token of shape: {probe_scores_per_token.shape}")
+                 # If probe handles (seq, hidden) directly, just call:
+                 # probe_scores_per_token = probe.forward(layer_activation_tensor)
 
                  # Average scores across the token dimension for this layer and item
                  # Ensure scores are float for nanmean
@@ -275,10 +285,10 @@ class AbhayCheckpointProbe(Probe):
                  # Stack the scalar layer scores into a tensor: List[Tensor()] -> Tensor(num_layers,)
                  stacked_item_layer_scores = torch.stack(item_layer_scores)
                  item_final_score_tensor = torch.nanmean(stacked_item_layer_scores.float(), dim=0) # Scalar tensor
-                 item_final_score = item_final_score_tensor.item() # Convert to float
+                 item_final_score = item_final_score_tensor # Don't convert to float
             except Exception as e:
                  print(f"Error averaging layer scores for item {batch_idx}: {e}")
-                 item_final_score = float('nan')
+                 item_final_score = torch.tensor(float('nan'), device=activations_device)
 
             final_batch_scores.append(item_final_score)
 
@@ -429,13 +439,7 @@ if __name__ == '__main__':
 
     # --- Compute scores ---
     print("\n--- Computing Scores ---")
-    try:
-        scores = checkpoint_probe.compute_scores(responses)
-    except Exception as e:
-         print(f"Error during compute_scores: {e}")
-         traceback.print_exc()
-         scores = [float('nan')] * responses.batch_size # Provide default NaN scores on error
-
+    scores = checkpoint_probe.compute_scores(responses)
 
     print("\n--- Final Results ---")
     print(f"Probe Name: {checkpoint_probe.name}")
@@ -448,7 +452,8 @@ if __name__ == '__main__':
 
     # --- Assertions ---
     assert len(scores) == responses.batch_size, f"Expected {responses.batch_size} scores, got {len(scores)}"
-    assert all(isinstance(s, float) for s in scores), "Not all computed scores are floats"
+    assert all(isinstance(s, torch.Tensor) for s in scores), "Not all computed scores are tensors"
+    assert all(s.numel() == 1 for s in scores), "Not all computed scores are scalars"
     print("\nAssertions passed.")
     # Note: Check for NaNs if they are unexpected. If inputs/probing can legitimately
     # produce NaNs (e.g., empty activations), this check might be too strict.

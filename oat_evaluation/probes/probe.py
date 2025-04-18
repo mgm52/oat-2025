@@ -11,7 +11,7 @@ class Probe(ABC):
     def compute_scores(
         self,
         responses: LLMResponses,
-    ) -> List[float]:  # List of length batch_size
+    ) -> List[torch.Tensor]:  # List of length batch_size
         """
         Compute probe scores for the given responses (one per response).
         

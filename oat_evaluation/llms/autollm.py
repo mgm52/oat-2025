@@ -22,28 +22,21 @@ def add_fwd_hooks(module_forward_pre_hooks: List[Tuple[torch.nn.Module, Callable
         for handle in handles:
             handle.remove()
 
-def activation_extraction_hook(destination: List[List[torch.Tensor]], index: int, debug_mode: bool = False):
-    def hook_fn(module, input):
-        if debug_mode:
-            print(f"Hook number {index} triggered with input length: {len(input)}, shapes {[i.shape for i in input]}")
-        destination[index].append(input[0].detach().clone())
-    return hook_fn
-
 class AutoLLM(LLM):
 
-    def __init__(self, model_path, dtype=torch.float32, debug_mode=False):
+    def __init__(self, model_path, dtype=torch.bfloat16, debug_mode=False):
         self.debug_mode = debug_mode
         print(f"Loading model from {model_path}...")
 
         self._model = AutoModelForCausalLM.from_pretrained(
-            # float16 was the default for obfuscated-activations...
-            # but I find that float32 is more stable for attacks...
             model_path, device_map="cuda", torch_dtype=dtype
         )
         self._tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-        # Consider disabling grad here, until an attack is run...?
+        self.prepare_model()
 
+    def prepare_model(self):
+        # Consider disabling grad here, until an attack is run...?
         # Pad from left, in case we run a soft-suffix attack...
         self._tokenizer.padding_side = "left"
         if self._tokenizer.pad_token:
@@ -63,7 +56,7 @@ class AutoLLM(LLM):
 
         # Get pad token in other forms
         self.pad_token_id = torch.tensor(self._tokenizer.pad_token_id, device='cuda').unsqueeze(0).unsqueeze(0)
-        self.pad_embedding = self._token_ids_to_embeddings(self.pad_token_id).detach()
+        self.pad_embedding = self._token_ids_to_embeddings(self.pad_token_id).to(self.dtype).detach()
 
         self._figure_out_chat_function()
 
@@ -88,6 +81,33 @@ class AutoLLM(LLM):
         Returns:
             LLMResponses containing the generated responses, their logits, and the extracted activation layers.
         """
+        # Check if we need to split into batches
+        batch_size = 16
+        if len(prompts) > batch_size:
+            # Split prompts into batches and process each batch
+            all_responses = []
+            all_logits = []
+            all_activations = []
+            
+            for i in range(0, len(prompts), batch_size):
+                batch_prompts = prompts[i:i+batch_size]
+                batch_result = self.generate_responses(
+                    batch_prompts,
+                    exposed_activations_request=exposed_activations_request,
+                    max_new_tokens=max_new_tokens
+                )
+                
+                all_responses.extend(batch_result.responses_strings)
+                all_logits.extend(batch_result.responses_logits)
+                
+                if batch_result.activation_layers is not None:
+                    all_activations.extend(batch_result.activation_layers)
+                
+            return LLMResponses(
+                responses_strings=all_responses,
+                responses_logits=all_logits,
+                activation_layers=all_activations if exposed_activations_request else None
+            )
 
         if isinstance(prompts[0], str):
             # Add special token chat template & padding!
@@ -108,13 +128,19 @@ class AutoLLM(LLM):
                 print(f"About to forward with tokenized_chat: {tokenized_chat}")
                 print(f"About to forward with tokenized_chat.input_ids.shape: {tokenized_chat['input_ids'].shape}")
             
-            outputs = self._model.generate(**tokenized_chat, output_scores=True, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
-
+            outputs = self._model.generate(**tokenized_chat, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
             start_length = tokenized_chat["input_ids"].shape[1]
+
             decoded_responses = [
                 self._tokenizer.decode(seq[start_length:], skip_special_tokens=True)
                 for seq in outputs.sequences
             ]
+
+            if self.debug_mode:
+                print(f"Outputs.sequences: {outputs.sequences}")
+                print(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
+
+            del outputs
 
             forced_responses = self.generate_responses_forced(
                 prompts,
@@ -127,91 +153,44 @@ class AutoLLM(LLM):
                 responses_logits=forced_responses.responses_logits,
                 activation_layers=forced_responses.activation_layers if exposed_activations_request else None
             )
+
+
         else:
             # Prompt is an embedding tensor! Manual generation. This will be slow...
             # We'll generate the whole thing first, then get activations & logits using the others method!
             responses_embeddings = []
 
-            for prompt_embedding in prompts:
-                responses_embeddings.append(None)
-                prompt_embedding = prompt_embedding.unsqueeze(0)
-                if self.debug_mode:
-                    print(f"About to handle prompt embedding of shape {prompt_embedding.shape}...")
-                gen_embedding = self._embeddings_to_gen_embeddings(prompt_embedding)
-                if self.debug_mode:
-                    print(f"Converted to gen/chat embedding of shape {gen_embedding.shape}...")
-                attention_mask = torch.ones(
-                    (1, gen_embedding.size(1)), dtype=torch.long, device=self._model.device
-                )
-                if self.debug_mode:
-                    print(f"Generated attention mask of shape {attention_mask.shape}...")
+            gen_embeddings = [self._embeddings_to_gen_embeddings(prompt_embedding.unsqueeze(0)) for prompt_embedding in prompts]
+            if self.debug_mode: print(f"Generated gen embeddings of shapes {[e.shape for e in gen_embeddings]}...")
+            # now perform left-padding
+            gen_embeddings_tensor, attention_masks = self._left_pad_embeddings(gen_embeddings)
+            if self.debug_mode: print(f"Turned into padded tensor of shape {gen_embeddings_tensor.shape}, with attention masks of shape {attention_masks.shape}...")
 
-                found_eos = False
-                for step_idx in range(max_new_tokens):
-                    if self.debug_mode:
-                        print(f"\nGeneration step {step_idx} of {max_new_tokens}...")
-                    if responses_embeddings[-1] is None:
-                        inputs_embeds = gen_embedding
-                    else:
-                        inputs_embeds = torch.cat([gen_embedding, responses_embeddings[-1]], dim=1)
+            outputs = self._model.generate(inputs_embeds=gen_embeddings_tensor, attention_mask=attention_masks, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
+            start_length = gen_embeddings_tensor.shape[1]
 
-                    if self.debug_mode:
-                        print(f"About to forward with inputs_embeds of shape {inputs_embeds.shape}...")
-                    outputs = self._model.forward(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
-                    if self.debug_mode:
-                        print(f"Got logits of shape {outputs.logits.shape}...")
-                        all_token_ids = outputs.logits.argmax(dim=-1)
-                        print(f"All token ids: {all_token_ids}")
-                        print(f"All token ids shape: {all_token_ids.shape}")
-                        all_string_tokens = self._tokenizer.batch_decode(all_token_ids, skip_special_tokens=True)
-                        print(f"All string tokens: {all_string_tokens}")
-                    next_token_logits = outputs.logits[:, -1, :]
-                    if self.debug_mode:
-                        print(f"Next token logits shape: {next_token_logits.shape}")
-                    next_token_id = torch.argmax(next_token_logits, dim=-1)
-                    if self.debug_mode:
-                        special_tokens_output_all = self._tokenizer.get_special_tokens_mask(all_token_ids[0].tolist(), already_has_special_tokens=True)
-                        print(f"Special tokens output all: {special_tokens_output_all}")
-                        print(f"Got next_token_id of shape {next_token_id.shape}...")
-                    
-                    special_tokens_output_next = self._tokenizer.get_special_tokens_mask([next_token_id], already_has_special_tokens=True)
-                    if special_tokens_output_next[0] == 1:
-                        found_eos = True
-                        if self.debug_mode: print(f"Found special token at step {step_idx}!!! Will break soon")
+            if self.debug_mode: print(f"Outputs.sequences (len {len(outputs.sequences)}), shapes {[s.shape for s in outputs.sequences]}: {outputs.sequences}")
 
-                    next_token_emb = self._token_ids_to_embeddings(next_token_id.unsqueeze(0))
-                    if self.debug_mode:
-                        print(f"Converted to next_token_emb of shape {next_token_emb.shape}...")
-                    # next_token_emb => shape (1, 1, embedding_size)
+            decoded_responses = [
+                self._tokenizer.decode(seq, skip_special_tokens=True)
+                for seq in outputs.sequences
+            ]
+            del outputs
+            if self.debug_mode: print(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
+            # Convert to embeddings
+            responses_embeddings = [self.string_to_embedding(response) for response in decoded_responses]
+            if self.debug_mode: print(f"Responses embeddings (len {len(responses_embeddings)}) shapes {[e.shape for e in responses_embeddings]}...")
 
-                    # Expand input embedding
-                    if not found_eos: # we don't want to include eos / eot token in the response
-                        if responses_embeddings[-1] is None:
-                            responses_embeddings[-1] = next_token_emb
-                        else:
-                            responses_embeddings[-1] = torch.cat([responses_embeddings[-1], next_token_emb], dim=1)
-                    # Expand attention mask
-                    am_extra = torch.ones((1, 1), dtype=torch.long, device=self._model.device)
-                    attention_mask = torch.cat([attention_mask, am_extra], dim=1)
-                    if self.debug_mode:
-                        print(f"Updated gen embedding to shape {gen_embedding.shape}, attention mask to shape {attention_mask.shape}...")
-
-                    if found_eos:
-                        break
-            
-            # squeeze first dim of all response embeddings
-            responses_embeddings = [e.squeeze(0) for e in responses_embeddings]
-            if self.debug_mode:
-                print(f"\nFinished collecting response embeddings! They have shapes {[e.shape for e in responses_embeddings]}")
-
-            # TODO next: i need to trim the embeddings down to remove special tokens...
-            # I also need to alter the "responses" string to include the first character...
-            # Also need to think about whether "generate"'s function should include first-character logits or not...
-            
-            return self.generate_responses_forced(
+            forced_responses = self.generate_responses_forced(
                 prompts,
                 responses_embeddings,
                 exposed_activations_request=exposed_activations_request
+            )
+
+            return LLMResponses(
+                responses_strings=decoded_responses,
+                responses_logits=forced_responses.responses_logits,
+                activation_layers=forced_responses.activation_layers if exposed_activations_request else None
             )
 
     @property
@@ -221,7 +200,7 @@ class AutoLLM(LLM):
     def _left_pad_embeddings(
         self,
         embeddings: List[torch.Tensor]
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Left-pad a list of embeddings (each of shape (1, seq_len_i, embedding_size))
         to the same max sequence length using the given pad_embedding (1, 1, embedding_size).
@@ -252,8 +231,8 @@ class AutoLLM(LLM):
             padded_embeddings.append(padded)
             attention_masks.append(attention_mask)
 
-        embeddings = torch.cat(padded_embeddings, dim=0)  # (batch_size, max_seq_len, embedding_size)
-        attention_masks = torch.cat(attention_masks, dim=0)  # (batch_size, max_seq_len)
+        embeddings = torch.cat(padded_embeddings, dim=0).to(self._model.device)  # (batch_size, max_seq_len, embedding_size)
+        attention_masks = torch.cat(attention_masks, dim=0).to(self._model.device)  # (batch_size, max_seq_len)
         return embeddings, attention_masks
 
 
@@ -330,7 +309,7 @@ class AutoLLM(LLM):
         prompts_or_embeddings: Union[List[str], List[torch.Tensor]],
         target_responses_or_embeddings: Union[List[str], List[torch.Tensor]],
         exposed_activations_request: Optional[ExposedActivationsRequest] = None,
-        add_response_ending: bool = False
+        add_response_ending: bool = False,
     ) -> LLMResponses:
         """
         Generate responses for the given prompts using the model, while forcing the outputs.
@@ -345,11 +324,46 @@ class AutoLLM(LLM):
             LLMResponses containing the generated responses, their logits, and the extracted activation layers.
         """
 
+        # Check if we need to split into batches
+        batch_size = 16
+        if len(prompts_or_embeddings) > batch_size:
+            # Split prompts and responses into batches and process each batch
+            all_responses = []
+            all_logits = []
+            all_activations = []
+            
+            for i in range(0, len(prompts_or_embeddings), batch_size):
+                batch_prompts = prompts_or_embeddings[i:i+batch_size]
+                batch_responses = target_responses_or_embeddings[i:i+batch_size]
+                batch_result = self.generate_responses_forced(
+                    batch_prompts,
+                    batch_responses,
+                    exposed_activations_request=exposed_activations_request,
+                    add_response_ending=add_response_ending
+                )
+                
+                all_responses.extend(batch_result.responses_strings)
+                all_logits.extend(batch_result.responses_logits)
+                
+                if batch_result.activation_layers is not None:
+                    all_activations.extend(batch_result.activation_layers)
+                
+            return LLMResponses(
+                responses_strings=all_responses,
+                responses_logits=all_logits,
+                activation_layers=all_activations if exposed_activations_request else None
+            )
+
         assert len(prompts_or_embeddings) == len(target_responses_or_embeddings)
         if isinstance(prompts_or_embeddings[0], torch.Tensor):
             assert isinstance(target_responses_or_embeddings[0], torch.Tensor)
             assert len(prompts_or_embeddings[0].shape) == 2
             assert len(target_responses_or_embeddings[0].shape) == 2
+
+            # check dtypes
+            assert prompts_or_embeddings[0].dtype == target_responses_or_embeddings[0].dtype, f"Prompts and target responses must have the same dtype, but got {prompts_or_embeddings[0].dtype} and {target_responses_or_embeddings[0].dtype}"
+            assert prompts_or_embeddings[0].dtype == self.dtype, f"Prompts and target responses must have the same dtype as the model, but got {prompts_or_embeddings[0].dtype} and {self.dtype}"
+
             # add batch dimension
             prompts_or_embeddings = [prompt.unsqueeze(0) for prompt in prompts_or_embeddings]
             target_responses_or_embeddings = [response.unsqueeze(0) for response in target_responses_or_embeddings]
@@ -372,7 +386,7 @@ class AutoLLM(LLM):
                     if debug_mode:
                         print(f"Hook for layer index {index} triggered with input[0] shape: {input[0].shape}")
                     # Store the *single* full activation tensor for this layer/pass
-                    destination[index] = input[0].detach().clone()
+                    destination[index] = input[0]
                 return hook_fn
 
             fwd_extraction_hooks = [(
@@ -579,6 +593,7 @@ if __name__ == "__main__":
     print(output.responses_strings)
     print(output.responses_logits)
     print(len(output.responses_logits))
+    print(output.responses_logits[0].shape)
 
     # TODO: fix activation shape...
     print(output.activation_layers)
@@ -592,6 +607,7 @@ if __name__ == "__main__":
     print(output.responses_strings)
     print(output.responses_logits)
     print(len(output.responses_logits))
+    print(output.responses_logits[0].shape)
 
     # TODO: fix activation shape...
     print(output.activation_layers)

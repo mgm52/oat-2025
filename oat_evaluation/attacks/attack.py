@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import Callable, List, Dict, Any, Optional, Tuple, Union
 
 import torch
 from oat_evaluation.llms.llm import LLM, LLMResponses
@@ -16,11 +16,13 @@ class AttackDetails():
         self,
         flop_cost: Optional[int] = None,
         generated_str_prompts: Optional[List[str]] = None,
-        generated_embedding_prompts: Optional[List[torch.Tensor]] = None
+        generated_embedding_prompts: Optional[List[torch.Tensor]] = None,
+        generated_embedding_attack_function: Optional[Callable] = None
     ):
         self.flop_cost = flop_cost
         self.generated_str_prompts = generated_str_prompts
         self.generated_embedding_prompts = generated_embedding_prompts
+        self.generated_embedding_attack_function = generated_embedding_attack_function
 
 class Attack(ABC):
     @abstractmethod
@@ -29,7 +31,8 @@ class Attack(ABC):
         llm: LLM,
         prompts: List[str],
         harmful_responses: List[str] = None,
-        probe_to_obfuscate: Optional[Probe] = None
+        probe_to_obfuscate: Optional[Probe] = None,
+        run_final_attack: bool = True
     ) -> Tuple[LLMResponses, AttackDetails]:
         """
         Generate harmful responses for the given prompts by attacking the LLM.
@@ -39,6 +42,7 @@ class Attack(ABC):
             prompts: The original prompts to attack
             harmful_responses: Optional target responses, e.g. for soft-suffix attacks
             probe_to_obfuscate: Optional probe to obfuscate against
+            run_final_attack: Whether to run the final attack or just return the attack function
             
         Returns:
             Tuple containing LLMResponses and AttackDetails.
