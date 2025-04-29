@@ -32,7 +32,9 @@ class Attack(ABC):
         prompts: List[str],
         harmful_responses: List[str] = None,
         probe_to_obfuscate: Optional[Probe] = None,
-        run_final_attack: bool = True
+        generate_final_responses: bool = True,
+        callback_steps: List[int] = None,
+        callbacks: List[Callable[[AttackDetails], Any]] = None
     ) -> Tuple[LLMResponses, AttackDetails]:
         """
         Generate harmful responses for the given prompts by attacking the LLM.
@@ -42,7 +44,9 @@ class Attack(ABC):
             prompts: The original prompts to attack
             harmful_responses: Optional target responses, e.g. for soft-suffix attacks
             probe_to_obfuscate: Optional probe to obfuscate against
-            run_final_attack: Whether to run the final attack or just return the attack function
+            generate_final_responses: Whether to run the final attack or just return the attack function
+            callback_steps: List of steps at which to execute callbacks
+            callbacks: List of callback functions that take AttackDetails as input
             
         Returns:
             Tuple containing LLMResponses and AttackDetails.

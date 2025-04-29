@@ -3,7 +3,7 @@ import torch
 import tqdm
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.llm import LLM, LLMResponses
@@ -65,13 +65,20 @@ class SoftSuffixAttack(Attack):
         prompts: List[str],
         harmful_responses: List[str] = None,
         probe_to_obfuscate: Optional[Probe] = None,
-        run_final_attack: bool = True
+        generate_final_responses: bool = True,
+        callback_steps: List[int] = None,
+        callbacks: List[Callable[[AttackDetails], Any]] = None
     ) -> Tuple[LLMResponses, AttackDetails]:
 
         torch.enable_grad()
 
         batch_size = min(self.batch_size, len(prompts))
-
+        
+        if callback_steps is None:
+            callback_steps = []
+        if callbacks is None:
+            callbacks = []
+        
         if harmful_responses is None or len(harmful_responses) == 0:
             raise ValueError("SoftSuffixAttack requires harmful_responses.")
         if len(prompts) != len(harmful_responses):
@@ -310,6 +317,15 @@ class SoftSuffixAttack(Attack):
                 epoch_ce_loss += batch_ce_loss_accumulator
                 epoch_probe_loss += batch_probe_loss_accumulator
 
+                # Execute callbacks if current step is in callback_steps
+                if total_steps in callback_steps:
+                    attack_details = AttackDetails(
+                        generated_embedding_prompts=apply_suffix(prompt_embeddings, suffix),
+                        generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix)
+                    )
+                    for callback in callbacks:
+                        callback(attack_details)
+
                 if (total_steps) % 128 == 0:
                     print(f"total_steps % 128 == 0! Decreasing LR by 25% (from {self.learning_rate} to {self.learning_rate * 0.75:.4f})")
                     self.learning_rate *= 0.75
@@ -332,7 +348,7 @@ class SoftSuffixAttack(Attack):
 
         # --- End of Epoch Loop ---
 
-        if run_final_attack:
+        if generate_final_responses:
             print("Training finished. Generating final responses with the optimized suffix...")
             # Return the final responses using the optimized suffix on the original (full) data
             final_responses, final_prompt_embeddings = generate_responses_with_suffix(
