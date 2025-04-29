@@ -790,6 +790,7 @@ class DeepmindSparseAutoencoder(SparseAutoencoder):
         width=131072,
         instruct=True,
         other_model_tokenizer=(None, None),
+        model_name=None,
         *args,
         **kwargs,
     ):
@@ -798,6 +799,8 @@ class DeepmindSparseAutoencoder(SparseAutoencoder):
         if other_model_tokenizer[0] is not None:
             print("A model and tokenizer were provided, using those instead")
             model, tokenizer = other_model_tokenizer
+        elif model_name is not None:
+            model, tokenizer = load_hf_model_and_tokenizer(model_name)
         else:
             model_name = "google/gemma-2-9b-it" if instruct else "google/gemma-2-9b"
             model, tokenizer = load_hf_model_and_tokenizer(model_name)
