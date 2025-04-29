@@ -1,3 +1,4 @@
+from collections import OrderedDict
 import torch
 import torch.nn as nn
 import pickle
@@ -11,12 +12,16 @@ import math # For isnan check
 from oat_evaluation.llms.autollm import AutoLLM
 from oat_evaluation.llms.llm import ExposedActivationsRequest, LLMResponses, TokenSelectionMethod
 from oat_evaluation.probes.probe import Probe
-from oat_training.src.probe_archs import LinearProbe # Added for better error reporting during loading
+from oat_training.src.probe_archs import LinearProbe, NonlinearProbe
 
-# --- Custom Unpickler and Loading Function (Keep as is) ---
+
 class RemapUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
-        if module == 'src.probe_archs' and name == 'LinearProbe':
+        print(f"Remapping pickle class: {module}.{name}")
+        if module == 'src.probe_archs' and name == 'NonlinearProbe':
+            print(f"Remapping pickle class: {module}.{name} -> {__name__}.NonlinearProbe")
+            return NonlinearProbe
+        elif module == 'src.probe_archs' and name == 'LinearProbe':
             # Map 'src.probe_archs.LinearProbe' to the local 'LinearProbe'
             print(f"Remapping pickle class: {module}.{name} -> {__name__}.LinearProbe")
             return LinearProbe
@@ -27,12 +32,10 @@ class RemapUnpickler(pickle.Unpickler):
             return super().find_class(module, name)
         except ModuleNotFoundError:
              print(f"Warning: Module '{module}' not found during unpickling.")
-             # You might want to return a placeholder or raise a custom error
-             raise # Re-raise the error if you don't have a replacement
+             raise
         except AttributeError:
              print(f"Warning: Class '{name}' not found in module '{module}' during unpickling.")
-             # You might want to return a placeholder or raise a custom error
-             raise # Re-raise the error if you don't have a replacement
+             raise
 
 
 class CustomPickleModule:
@@ -79,21 +82,26 @@ def load_probes_with_remapping(file_path: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"Error loading with custom remapping: {e}")
         traceback.print_exc()
-        # Fallback attempt without custom module? Might fail differently.
-        # print("\nAttempting fallback load without custom remapping...")
-        # try:
-        #     probes_fallback = torch.load(file_path, map_location=torch.device('cpu'))
-        #     print("Fallback load successful, but remapping might be needed.")
-        #     # You might inspect probes_fallback here if needed
-        #     return None # Indicate failure of the required method
-        # except Exception as e_fb:
-        #     print(f"Fallback load also failed: {e_fb}")
-        #     traceback.print_exc()
-        #     return None
         return None # Return None on failure
 
+def _build_probe_from_state_dict(sd: OrderedDict):
+    # Detect probe type heuristically
+    if "linear.weight" in sd:          # LinearProbe
+        d_model = sd["linear.weight"].shape[1]
+        probe = LinearProbe(d_model)
+        probe.load_state_dict(sd)
+        probe.eval()
+        return probe
+    elif "mlp.0.weight" in sd:         # NonlinearProbe
+        d_model = sd["mlp.0.weight"].shape[1]
+        d_mlp   = sd["mlp.3.weight"].shape[1]   # hidden width
+        probe = NonlinearProbe(d_model, d_mlp)
+        probe.load_state_dict(sd)
+        probe.eval()
+        return probe
+    else:
+        return None
 
-# --- AbhayCheckpointProbe Class ---
 class AbhayCheckpointProbe(Probe):
 
     def __init__(self, checkpoint_path: str):
@@ -108,23 +116,27 @@ class AbhayCheckpointProbe(Probe):
         # And store them correctly in an nn.ModuleDict for proper parameter registration etc.
         self.probes = nn.ModuleDict()
         extracted_target_layers = []
+
         for layer_key, probe_obj in self.loaded_probes.items():
-            # Check if the key is an integer (as per user confirmation)
-            if isinstance(layer_key, int):
-                layer_index = layer_key # The key is the index
-                if isinstance(probe_obj, LinearProbe):
-                    # Use string representation of the integer index as the key for ModuleDict
-                    self.probes[str(layer_index)] = probe_obj
-                    extracted_target_layers.append(layer_index)
-                    print(f"  Registered probe for layer {layer_index} under key '{layer_index}'")
+            if not isinstance(layer_key, int):
+                print(f"Unexpected key {layer_key!r} - skipping"); continue
+
+            if isinstance(probe_obj, (LinearProbe, NonlinearProbe)):
+                self.probes[str(layer_key)] = probe_obj
+                extracted_target_layers.append(layer_key)
+
+            elif isinstance(probe_obj, OrderedDict):
+                rebuilt = _build_probe_from_state_dict(probe_obj)
+                if rebuilt is not None:
+                    self.probes[str(layer_key)] = rebuilt
+                    extracted_target_layers.append(layer_key)
                 else:
-                    print(f"Warning: Object for key {layer_index} in checkpoint is not a LinearProbe instance (type: {type(probe_obj)}). Skipping.")
+                    print(f"Couldn't infer probe class for layer {layer_key}")
             else:
-                # Handle unexpected key types if necessary, or just warn/skip
-                print(f"Warning: Encountered unexpected key type {type(layer_key)} (value: {repr(layer_key)}) in checkpoint dictionary. Expected integer. Skipping probe.")
+                print(f"Key {layer_key}: unsupported type {type(probe_obj)} - skipping")
 
         if not self.probes:
-            raise ValueError("No valid LinearProbe modules found and stored from the loaded checkpoint dictionary.")
+            raise ValueError("No valid LinearProbe or NonlinearProbe modules found and stored from the loaded checkpoint dictionary.")
 
         self.target_layers = sorted(extracted_target_layers) # Store the integer indices, sorted
         print(f"Successfully initialized AbhayCheckpointProbe with probes for layers: {self.target_layers}")
@@ -256,18 +268,8 @@ class AbhayCheckpointProbe(Probe):
 
 
                  # Apply the probe: forward(Tensor(num_tokens, hidden)) -> Tensor(num_tokens)
-                 # Note: LinearProbe might expect (batch, seq, hidden). We process item by item,
-                 # so we can treat num_tokens as the sequence length. If the probe strictly
-                 # needs a batch dim, we might need to unsqueeze/squeeze. Let's assume
-                 # the LinearProbe forward handles input shape flexibility or works with (seq, hidden).
-                 # If it MUST have batch, use: .unsqueeze(0) for input, .squeeze(0) for output.
-                 #probe.eval() # Ensure probe is in eval mode
-                 # Check if probe expects batch dim explicitly (common pattern)
-                 # Let's assume it might, so add/remove batch dim of 1
                  probe_scores_per_token = torch.sigmoid(probe.forward(layer_activation_tensor.unsqueeze(0))).squeeze(0) # Shape: (num_tokens,)
                  #print(f"Got post-sigmoid probe scores per token of shape: {probe_scores_per_token.shape}")
-                 # If probe handles (seq, hidden) directly, just call:
-                 # probe_scores_per_token = probe.forward(layer_activation_tensor)
 
                  # Average scores across the token dimension for this layer and item
                  # Ensure scores are float for nanmean
@@ -298,7 +300,6 @@ class AbhayCheckpointProbe(Probe):
     @property
     def activation_extraction_request(self) -> ExposedActivationsRequest:
         """The request for the activation extraction needed by this probe."""
-        # Ensure target_layers are sorted integers (validation done in __init__)
         clean_target_layers = self.target_layers # Already sorted list of ints
 
         return ExposedActivationsRequest(
@@ -309,7 +310,6 @@ class AbhayCheckpointProbe(Probe):
     @property
     def name(self) -> str:
         """The name of the probe."""
-        # Shorten path for display if desired
         short_path = self.checkpoint_path.split('/')[-1]
         return f"{self.__class__.__name__}({short_path})" # Use class name and checkpoint filename
 
@@ -322,7 +322,7 @@ class AbhayCheckpointProbe(Probe):
         return next(self.probes[first_probe_key].parameters()).device
 
 
-# --- Example Usage (Conceptual - Adapting to New Structure) ---
+# --- Example Usage
 if __name__ == '__main__':
 
     CHECKPOINT_FILE = "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/probes_step_2048.pt"
@@ -336,7 +336,7 @@ if __name__ == '__main__':
         sys.exit(1)
 
 
-    USE_DUMMY_DATA = False # Set to True to test with dummy data matching the new structure
+    USE_DUMMY_DATA = False
 
     if USE_DUMMY_DATA:
         print("\n--- Using Dummy Data ---")
@@ -344,7 +344,7 @@ if __name__ == '__main__':
         # Different number of tokens per batch item
         num_tokens_item1 = 5
         num_tokens_item2 = 3
-        hidden_size = 3584 # Example hidden size, adjust if known from probe training
+        hidden_size = 3584 # Example hidden size
         target_layers_indices = checkpoint_probe.target_layers # Use layers found by probe
         num_layers = len(target_layers_indices)
 
@@ -436,7 +436,6 @@ if __name__ == '__main__':
              traceback.print_exc()
              sys.exit(1)
 
-
     # --- Compute scores ---
     print("\n--- Computing Scores ---")
     scores = checkpoint_probe.compute_scores(responses)
@@ -455,8 +454,6 @@ if __name__ == '__main__':
     assert all(isinstance(s, torch.Tensor) for s in scores), "Not all computed scores are tensors"
     assert all(s.numel() == 1 for s in scores), "Not all computed scores are scalars"
     print("\nAssertions passed.")
-    # Note: Check for NaNs if they are unexpected. If inputs/probing can legitimately
-    # produce NaNs (e.g., empty activations), this check might be too strict.
     nan_count = sum(1 for s in scores if math.isnan(s))
     if nan_count > 0:
         print(f"Warning: Found {nan_count} NaN score(s) in the results.")

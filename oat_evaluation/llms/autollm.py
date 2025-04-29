@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import collections
 from enum import Enum
+import time
 from typing import Callable, List, Dict, Any, Optional, Tuple, Union
 
 import torch
@@ -26,16 +27,25 @@ class AutoLLM(LLM):
 
     def __init__(self, model_path, dtype=torch.bfloat16, debug_mode=False):
         self.debug_mode = debug_mode
-        print(f"Loading model from {model_path}...")
+        print(f"Time: {time.time()}: Loading model from {model_path}...")
 
         self._model = AutoModelForCausalLM.from_pretrained(
             model_path, device_map="cuda", torch_dtype=dtype
         )
+        print(f"Time: {time.time()}: Model loaded. Loading tokenizer...")
         self._tokenizer = AutoTokenizer.from_pretrained(model_path)
+        print(f"Tokenizer loaded.")
 
         self.prepare_model()
 
+    def set_offsets(self, target_layer_offset: int = 0, target_token_start_offset: int = 0, target_token_end_offset: int = 0):
+        self.target_layer_offset = target_layer_offset
+        self.target_token_start_offset = target_token_start_offset
+        self.target_token_end_offset = target_token_end_offset
+        print(f"Set offsets: target_layer_offset = {self.target_layer_offset}, target_token_start_offset = {self.target_token_start_offset}, target_token_end_offset = {self.target_token_end_offset}")
+
     def prepare_model(self):
+        print(f"Preparing model...")
         # Consider disabling grad here, until an attack is run...?
         # Pad from left, in case we run a soft-suffix attack...
         self._tokenizer.padding_side = "left"
@@ -154,10 +164,7 @@ class AutoLLM(LLM):
                 activation_layers=forced_responses.activation_layers if exposed_activations_request else None
             )
 
-
         else:
-            # Prompt is an embedding tensor! Manual generation. This will be slow...
-            # We'll generate the whole thing first, then get activations & logits using the others method!
             responses_embeddings = []
 
             gen_embeddings = [self._embeddings_to_gen_embeddings(prompt_embedding.unsqueeze(0)) for prompt_embedding in prompts]
@@ -177,6 +184,7 @@ class AutoLLM(LLM):
             ]
             del outputs
             if self.debug_mode: print(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
+
             # Convert to embeddings
             responses_embeddings = [self.string_to_embedding(response) for response in decoded_responses]
             if self.debug_mode: print(f"Responses embeddings (len {len(responses_embeddings)}) shapes {[e.shape for e in responses_embeddings]}...")
@@ -375,7 +383,11 @@ class AutoLLM(LLM):
         raw_activations_list = [] # Will store list[tensor(batch, seq, hidden)]
         fwd_extraction_hooks = []
         if exposed_activations_request:
-            target_layers = exposed_activations_request.extract_layers_indices
+            target_layers_raw = [li + self.target_layer_offset for li in exposed_activations_request.extract_layers_indices]
+            target_layers = [li for li in target_layers_raw if li >= 0 and li < len(self._model_block_modules)]
+            if len(target_layers_raw) != len(target_layers):
+                print(f"WARNING: Some target layers were out of range, so we ignored them. Target layers raw length: {len(target_layers_raw)}, target layers filtered length: {len(target_layers)}")
+            
             # Make raw_activations_list the right size initially
             raw_activations_list = [None] * len(target_layers)
 
@@ -474,6 +486,14 @@ class AutoLLM(LLM):
             # Inner list: num_req_layers
             final_activation_layers = [[] for _ in range(len(prompts_or_embeddings))]
 
+            if self.debug_mode:
+                # map[batch_idx][layer_idx] = (start_idx, end_idx)
+                slice_map = [
+                    [None] * len(raw_activations_list)
+                    for _ in range(len(prompts_or_embeddings))
+                ]
+
+
             # raw_activations_list contains tensors of shape (batch, seq, hidden)
             for layer_idx, full_layer_activation in enumerate(raw_activations_list):
                  # full_layer_activation shape: (batch_size, activation_seq_len, hidden_size)
@@ -484,28 +504,54 @@ class AutoLLM(LLM):
                     # Recalculate start/end based on *activation* sequence length
                     # NOTE: Activation seq len might differ slightly from logit seq len depending on model/hook timing,
                     # but often they are the same for pre-hooks. Use the activation tensor's shape.
-                    act_response_start_idx = activation_seq_len - self._chat_outro.shape[1] - response_length - 1
-                    act_response_end_idx = activation_seq_len - self._chat_outro.shape[1] - 1
+                    act_slice_start = activation_seq_len - self._chat_outro.shape[1] - response_length - 1 + self.target_token_start_offset
+                    act_slice_end = activation_seq_len - self._chat_outro.shape[1] - 1 + self.target_token_end_offset
 
-                    act_slice_start = act_response_start_idx
-                    act_slice_end = act_response_end_idx
                     if add_response_ending:
                          act_slice_end = activation_seq_len - 1 # Include tokens for outro
 
+                    if self.debug_mode:
+                        slice_map[batch_idx][layer_idx] = (act_slice_start, act_slice_end)
+
                     # Basic validation for activation slice indices
                     if act_slice_start < 0 or act_slice_end > activation_seq_len or act_slice_start >= act_slice_end:
-                        print(f"Warning: Invalid activation slice for layer {layer_idx}, batch item {batch_idx}. Start: {act_slice_start}, End: {act_slice_end}, ActSeqLen: {activation_seq_len}, RespLen: {response_length}. Appending empty tensor.")
+                        print(f"Warning: Invalid activation slice for layer {layer_idx}, batch item {batch_idx}. Start: {act_slice_start}, End: {act_slice_end}, ActSeqLen: {activation_seq_len}, RespLen: {response_length}. Adjusting slice indices...")
                         # Getting hidden size correctly:
-                        hidden_size = full_layer_activation.shape[-1]
-                        final_activation_layers[batch_idx].append(torch.empty((0, hidden_size), dtype=full_layer_activation.dtype, device=full_layer_activation.device))
-                        continue # Skip to next batch item if slice is invalid
+                        act_slice_start = max(0, act_slice_start)
+                        act_slice_end = min(activation_seq_len, act_slice_end)
+                        print(f"Adjusted slice indices: Start: {act_slice_start}, End: {act_slice_end}")
 
                     # Select the slice for this batch item and this layer
                     token_activations = full_layer_activation[batch_idx, act_slice_start:act_slice_end, :]
                     # token_activations shape: (num_req_tokens, hidden_size)
 
-                    if self.debug_mode:
-                         print(f"Batch {batch_idx}, Layer {layer_idx}: Activation slice indices [{act_slice_start}:{act_slice_end}] -> shape {token_activations.shape}")
+                    if self.debug_mode and final_activation_layers:
+                        for batch_idx, logit in enumerate(trimmed_logits):
+                            # 1) token strings
+                            pred_ids     = logit.argmax(dim=-1)
+                            pred_tokens  = self._tokenizer.convert_ids_to_tokens(pred_ids.tolist())
+                            print(f"[Debug] Response {batch_idx} tokens: {list(enumerate(pred_tokens))}")
+
+                            # 2) activations
+                            for layer_idx, acts in enumerate(final_activation_layers[batch_idx]):
+                                start, end = slice_map[batch_idx][layer_idx]
+                                full_len   = raw_activations_list[layer_idx].shape[1]
+
+                                kept = end - start
+                                trimmed = full_len - kept
+                                print(f"[Debug]  Layer {layer_idx}: full_seq={full_len}, kept_range={start}:{end} "
+                                    f"({kept} tokens kept, {trimmed} trimmed), acts.shape={tuple(acts.shape)}")
+
+                                # per‐index status
+                                status = [(i, 'kept' if start <= i < end else 'trimmed')
+                                        for i in range(full_len)]
+                                print(f"[Debug]    indices: {status}")
+
+                                # sanity check
+                                assert acts.shape[0] == len(pred_tokens), (
+                                    f"Mismatch on batch {batch_idx}, layer {layer_idx}: "
+                                    f"{acts.shape[0]} activations vs {len(pred_tokens)} tokens"
+                                )
 
                     # Append to the correct place in the final structure
                     final_activation_layers[batch_idx].append(token_activations)
@@ -568,7 +614,7 @@ class AutoLLM(LLM):
 
     # TODO: consider how to support attacks injected into activation space...
     # We'll need to be able to extract activations, give them to an arbitrary attack function, then continue generation....
-    # I expect we can just add a sort of custom hooks feature into ActivationRequest ?!!????!!!!
+    # I expect we can just add a sort of custom hooks feature into ActivationRequest.
 
 if __name__ == "__main__":
     llm = AutoLLM("/workspace/gemma_2_9b_instruct", debug_mode=True)
@@ -595,7 +641,7 @@ if __name__ == "__main__":
     print(len(output.responses_logits))
     print(output.responses_logits[0].shape)
 
-    # TODO: fix activation shape...
+    # TODO: check activation shape...
     print(output.activation_layers)
     print(len(output.activation_layers))
     print(len(output.activation_layers[0]))
@@ -609,7 +655,7 @@ if __name__ == "__main__":
     print(len(output.responses_logits))
     print(output.responses_logits[0].shape)
 
-    # TODO: fix activation shape...
+    # TODO: check activation shape...
     print(output.activation_layers)
     print(len(output.activation_layers))
     print(len(output.activation_layers[0]))

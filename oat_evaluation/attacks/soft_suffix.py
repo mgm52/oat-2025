@@ -23,11 +23,10 @@ class SoftSuffixAttack(Attack):
         batch_size: int = 32,
         adam_epsilon: float = 1e-8,
         epsilon: float = 5.0,
-        # --- Added probe loss weight ---
-        probe_loss_weight: float = 1.0, # Default to 1.0 for original behavior
-        # --- End addition ---
+        probe_loss_weight: float = 1.0,
         debug_mode: bool = False,
-        chunk_size: int = 4
+        chunk_size: int = 4,
+        max_steps: int = -1
     ):
         if chunk_size > batch_size:
              print(f"Warning: chunk_size ({chunk_size}) > batch_size ({batch_size}). Setting chunk_size = batch_size.")
@@ -38,13 +37,11 @@ class SoftSuffixAttack(Attack):
         self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.epsilon = epsilon
-        # --- Store the weight ---
         self.probe_loss_weight = probe_loss_weight
-        # --- End storage ---
         self.debug_mode = debug_mode
         self.chunk_size = chunk_size
         self.adam_epsilon = adam_epsilon
-
+        self.max_steps = max_steps
         print(f"SoftSuffixAttack initialized with suffix_length {suffix_length}, num_epochs {num_epochs}, learning_rate {learning_rate}, batch_size {batch_size}, epsilon {epsilon}, probe_loss_weight {probe_loss_weight}, debug_mode {debug_mode}, chunk_size {chunk_size}")
 
     def clip_suffix(self, suffix: torch.Tensor, epsilon: float) -> None:
@@ -85,7 +82,6 @@ class SoftSuffixAttack(Attack):
             else:
                 raise ValueError(f"Number of prompts ({len(prompts)}) must match number of harmful_responses ({len(harmful_responses)}).")
 
-
         # Start with a random suffix (shape (suffix_length, embedding_size))
         # 1. Create a suffix parameter
         suffix = torch.zeros(
@@ -104,6 +100,7 @@ class SoftSuffixAttack(Attack):
 
         # Ensure right dtype
         suffix = suffix.to(llm.dtype)
+        self.suffix = suffix # to save it later
 
         # --- Precompute embeddings and token IDs outside the loop ---
         print("Precomputing embeddings...")
@@ -113,7 +110,6 @@ class SoftSuffixAttack(Attack):
         harmful_token_ids_including_ending = [llm.string_to_token_ids(r, add_response_ending=True).long().to(llm.device) for r in harmful_responses] # Targets for CE loss
         print("Embeddings precomputed.")
         # --- End precomputation ---
-
 
         if self.debug_mode:
             print("-" * 20)
@@ -125,7 +121,7 @@ class SoftSuffixAttack(Attack):
             print(f"Pad embedding requires_grad: {llm.pad_embedding.requires_grad}") # Should be False
             print("-" * 20)
 
-        # Ensure pad_embedding was detached during LLM init (verify this in AutoLLM)
+        # Ensure pad_embedding was detached during LLM init
         if llm.pad_embedding.requires_grad:
             raise ValueError("LLM's pad_embedding requires grad! Detach it in AutoLLM.__init__.")
         if any(p.requires_grad for p in prompt_embeddings):
@@ -200,10 +196,8 @@ class SoftSuffixAttack(Attack):
                     response_chunk = response_batch[chunk_start_in_batch:chunk_end_in_batch]
                     target_ids_chunk = target_ids_batch[chunk_start_in_batch:chunk_end_in_batch]
 
-                    print_mem_usage()
                     print(f"Generating responses for chunk number {chunk_start_in_batch / self.chunk_size}...")
                     new_responses, _ = generate_responses_with_suffix(prompt_chunk, suffix, response_chunk)
-                    print_mem_usage()
                     new_logits = new_responses.responses_logits
                     assert new_responses.activation_layers[0][0].requires_grad, "Activation layers should require grad"
 
@@ -218,8 +212,6 @@ class SoftSuffixAttack(Attack):
 
                         if logits_i.shape[0] != target_ids_i.shape[0]:
                             print(f"Warning: Mismatch in sequence length for item {i} in chunk! Logits shape {logits_i.shape}, Target IDs shape {target_ids_i.shape}. Skipping this item.")
-                            # This might happen if generate_responses_forced has subtle length issues or tokenization differences.
-                            # Consider padding or truncating if this is common, or debugging the generation process.
                             continue
 
                         if logits_i.shape[0] == 0:
@@ -250,20 +242,6 @@ class SoftSuffixAttack(Attack):
                     # --- Calculate Probe Loss for the chunk ---
                     probe_loss_term = 0.0
                     if probe_to_obfuscate is not None and valid_indices > 0: # Only compute if CE loss was possible
-
-                        # --- >>> NEW DEBUG CHECK <<< ---
-                        # for b in range(len(new_responses.activation_layers)):
-                        #     for l in range(len(new_responses.activation_layers[b])):
-                        #         # print(f"  DEBUG (Probe compute_scores): Layer {l}, Item {b}, "
-                        #         #     f"Tensor requires_grad={new_responses.activation_layers[b][l].requires_grad}, "
-                        #         #     f"grad_fn={new_responses.activation_layers[b][l].grad_fn is not None}"
-                        #         # )
-
-                        # --- >>> END DEBUG CHECK <<< ---
-
-                        # Filter responses corresponding to valid indices if necessary,
-                        # or assume probe.compute_scores handles potential length mismatches gracefully.
-                        # If probe expects same number of items as input prompts:
                         probe_scores = probe_to_obfuscate.compute_scores(new_responses) # Assuming probe handles potential errors / filters internally if needed
                         if probe_scores and len(probe_scores) == valid_indices: # Ensure scores match valid items
                             # Check if scores require grad, detach if necessary for accumulation
@@ -281,7 +259,6 @@ class SoftSuffixAttack(Attack):
                         else:
                              probe_loss_for_opt = torch.tensor(0.0, device=suffix.device, requires_grad=False)
 
-
                     # --- Combine Losses with Weighting ---
                     total_loss = ce_loss
                     if probe_to_obfuscate is not None and valid_indices > 0:
@@ -294,16 +271,13 @@ class SoftSuffixAttack(Attack):
                     scaled_loss = total_loss / num_chunks_in_batch
 
                     # --- Accumulate Loss Values for Reporting ---
-                    # Use .item() to get scalar Python numbers, multiply by actual items processed
                     batch_total_loss_accumulator += scaled_loss.item() * current_chunk_size # Store scaled loss for reporting average total loss
                     batch_ce_loss_accumulator += (ce_loss.item() / num_chunks_in_batch) * current_chunk_size # Store scaled CE loss part
                     # probe_loss_term is already detached average score, scale it
                     batch_probe_loss_accumulator += (probe_loss_term / num_chunks_in_batch) * self.probe_loss_weight * current_chunk_size # Store scaled & weighted probe loss part
 
-                    print_mem_usage()
                     print(f"About to call .backward()...")
                     scaled_loss.backward() # Accumulate gradients on the combined, scaled loss
-                    print_mem_usage()
 
                     if self.debug_mode:
                         grad_norm_chunk = suffix.grad.norm().item() if suffix.grad is not None else 0
@@ -314,9 +288,8 @@ class SoftSuffixAttack(Attack):
                 # --- End of Chunk Loop ---
 
                 grad_norm_before_clip = torch.nn.utils.clip_grad_norm_([suffix], max_norm=1.0)
-                print_mem_usage()
-                print(f"About to call optimizer.step() for batch at index {batch_start}...")
                 optimizer.step()
+                print(f"Just finished optimizer.step() for batch at index {batch_start}...")
                 print_mem_usage()
                 total_steps += 1
                 self.clip_suffix_per_row(suffix, self.epsilon)
@@ -328,10 +301,8 @@ class SoftSuffixAttack(Attack):
 
                 batch_pbar.set_postfix({
                     "Total Loss": f"{avg_batch_total_loss:.4f}", # Report average scaled loss
-                    # Optional: report unscaled loss components if preferred
-                    # "Avg CE Loss": f"{batch_ce_loss_accumulator * num_chunks_in_batch / actual_batch_size:.4f}"
-                    # "Avg Probe Loss": f"{batch_probe_loss_accumulator * num_chunks_in_batch / (actual_batch_size * self.probe_loss_weight):.4f}" # Unweighted avg probe score
-                    "Probe Loss (W)": f"{avg_batch_probe_loss:.4f}", # Report avg scaled weighted probe loss
+                    "Probe Loss (Weighted)": f"{avg_batch_probe_loss:.4f}", # Report avg scaled weighted probe loss
+                    "CE Loss": f"{avg_batch_ce_loss:.4f}",
                     "Grad Norm": f"{grad_norm_before_clip.item():.4f}",
                     "Suffix Norm": f"{suffix.norm().item():.4f}"
                 })
@@ -344,6 +315,14 @@ class SoftSuffixAttack(Attack):
                     self.learning_rate *= 0.75
                     for param_group in optimizer.param_groups:
                         param_group['lr'] *= 0.75  # halve the learning rate
+                
+                if self.max_steps > 0 and total_steps >= self.max_steps:
+                    print(f"Reached max steps ({self.max_steps}). Stopping training.")
+                    break
+
+            if self.max_steps > 0 and total_steps >= self.max_steps:
+                print(f"Reached max steps ({self.max_steps}). Stopping training.")
+                break
 
             # --- End of Batch Loop ---
             avg_epoch_loss = epoch_loss / num_prompts if num_prompts > 0 else 0
