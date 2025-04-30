@@ -18,6 +18,7 @@ pip install seaborn
 pip install wandb
 pip install numpy==1.26.4
 pip install git+https://github.com/dsbowen/strong_reject.git@main
+pip install git+https://github.com/serteal/nanoflrt.git@main  # FLRT attack
 
 # sudo apt-get install python-tk python3-tk tk-dev
 # huggingface-cli login
