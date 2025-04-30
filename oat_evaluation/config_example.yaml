@@ -1,0 +1,18 @@
+PROBE_PATHS:
+  # Downloaded from huggingface...
+  gemma_2_9b_oat_linear: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/linear_probes_step_2048.pt"
+  gemma_2_9b_oat_mlp: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/nonlinear_probes_step_2048.pt"
+  llama_3_8b_oat_linear: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/abhayllama_probes.pt"
+  llama_3_8b_linear: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/base_llama_1024_linear.pt"
+  llama_3_8b_lat_linear: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/latprobes_step_1024.pt"
+MODEL_PATHS:
+  gemma_2_9b_oat_linear: "oat-workers/oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/lora_model_step_2048"
+  gemma_2_9b_oat_mlp: "oat-workers/oat-gemma-apr2-checks/gemma2_lora_oat_generation_nonlinear/lora_model_step_2048"
+  llama_3_8b_oat_linear: "Mechanistic-Anomaly-Detection/llama3-oat-generation-linear"
+  llama_3_8b_lat: "LLM-LAT/robust-llama3-8b-instruct"
+BASE_PATHS:
+  gemma: "/workspace/gemma_2_9b_instruct"
+  llama: "/workspace/llama_3_8b_instruct" 
+HF_HOME: "/workspace/.cache/huggingface" # Defaults to "~/.cache/huggingface"... But /workspace/ is runpod's network volume
+HF_TOKEN: "hf_<INSERT_HERE>"
+OPENAI_API_KEY: "sk-proj-<INSERT-HERE>"

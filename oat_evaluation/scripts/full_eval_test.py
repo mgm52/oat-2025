@@ -13,7 +13,7 @@ from oat_evaluation.attacks.soft_suffix import SoftSuffixAttack
 from oat_evaluation.llms.autollm import AutoLLM
 from oat_evaluation.llms.autopeft import AutoPEFT
 from oat_evaluation.probes.abhay_checkpoints import AbhayCheckpointProbe
-
+from oat_evaluation.utils import load_config_and_set_vars
 
 def sample_examples(
     dataset_list: List, proportions: List[float], total: int = 1000, only_prompts: bool = False
@@ -197,49 +197,7 @@ def main(target_layer_offset=0, target_token_start_offset=0, target_token_end_of
             print(f"Running with target offsets: layer={target_layer_offset}, "
                   f"token_start={target_token_start_offset}, token_end={target_token_end_offset}")
         else:
-            # Initialize model and probe (legacy support for standalone runs)
-            PROBE_TYPE = "mlp"
-            OAT_OR_BASE = "abhayllama"  # options: "oat", "base", "abhayllama", "llama"
-
-            # Initialize probe and model
-            linear_probe_path = "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/linear_probes_step_2048.pt"
-            mlp_probe_path = "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/nonlinear_probes_step_2048.pt"
-            abhayllama_probe_path = "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/abhayllama_probes.pt"
-
-            linear_model_path = "gemma2_lora_oat_generation_linear/lora_model_step_2048"
-            mlp_model_path = "gemma2_lora_oat_generation_nonlinear/lora_model_step_2048"
-            abhayllama_model_path = "abhayesian/llama3-oat-generation-linear"
-
-            adapter_id = "oat-workers/oat-gemma-apr2-checks"
-            base_path = "/workspace/gemma_2_9b_instruct"
-
-            if OAT_OR_BASE == "abhayllama":
-                probe = AbhayCheckpointProbe(checkpoint_path=abhayllama_probe_path)
-                llm = AutoPEFT("/workspace/llama_3_8b_instruct", abhayllama_model_path, "", dtype=torch.bfloat16, debug_mode=False)
-            elif OAT_OR_BASE == "llama":
-                probe = AbhayCheckpointProbe(checkpoint_path=abhayllama_probe_path)
-                llm = AutoLLM("/workspace/llama_3_8b_instruct", dtype=torch.bfloat16, debug_mode=False)
-            elif PROBE_TYPE == "mlp":
-                probe = AbhayCheckpointProbe(checkpoint_path=mlp_probe_path)
-                if OAT_OR_BASE == "oat":
-                    llm = AutoPEFT(base_path, adapter_id, mlp_model_path, dtype=torch.bfloat16, debug_mode=False)
-            elif PROBE_TYPE == "linear":
-                probe = AbhayCheckpointProbe(checkpoint_path=linear_probe_path)
-                if OAT_OR_BASE == "oat":
-                    llm = AutoPEFT(base_path, adapter_id, linear_model_path, dtype=torch.bfloat16, debug_mode=False)
-            
-            if OAT_OR_BASE == "base":
-                llm = AutoLLM("/workspace/gemma_2_9b_instruct", dtype=torch.bfloat16, debug_mode=False)
-            
-            # Set offsets based on function arguments
-            llm.set_offsets(
-                target_layer_offset=target_layer_offset,
-                target_token_start_offset=target_token_start_offset,
-                target_token_end_offset=target_token_end_offset
-            )
-            
-            print(f"Running with target offsets: layer={target_layer_offset}, "
-                  f"token_start={target_token_start_offset}, token_end={target_token_end_offset}")
+            raise ValueError("LLM not provided")
 
         # Load jailbreak data if not provided
         if harmful is None or harmless is None:
@@ -304,7 +262,7 @@ def main(target_layer_offset=0, target_token_start_offset=0, target_token_end_of
         prompts=harm_prompts_train,
         harmful_responses=harm_responses_train,
         probe_to_obfuscate=probe,
-        run_final_attack=False
+        generate_final_responses=False,
     )
     print_mem_usage()
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -382,49 +340,32 @@ def run_main():
     """
     Initialize models, load datasets once, and run evaluations with different offsets.
     """
-    # Initialize model and probe once
-    PROBE_TYPE = "linear" # options: "mlp", "linear"
-    OAT_OR_BASE = "latllama"  # options: "oat", "base", "abhayllama", "llama", "latllama"
+    # Load config for model and probe paths
+    config = load_config_and_set_vars()
 
     # Initialize probe and model
-    linear_probe_path = "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/linear_probes_step_2048.pt"
-    mlp_probe_path = "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/nonlinear_probes_step_2048.pt"
-    abhayllama_probe_path = "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/abhayllama_probes.pt"
-    llama_probe_path = "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/base_llama_1024_linear.pt"
+    OAT_OR_BASE = "abhayllama"  # options: "abhayllama", "llama_base", "gemma_oat_mlp", "gemma_oat_linear", "gemma_base", "latllama"
+    MODEL_DEBUG_MODE = False
+    MODEL_DTYPE = torch.bfloat16
 
-    linear_model_path = "gemma2_lora_oat_generation_linear/lora_model_step_2048"
-    mlp_model_path = "gemma2_lora_oat_generation_nonlinear/lora_model_step_2048"
-    #abhayllama_model_path = "abhayesian/llama3-oat-generation-linear" # very broken checkpoint!
-    abhayllama_model_path = "Mechanistic-Anomaly-Detection/llama3-oat-generation-linear"
-    latllama_model_path = "LLM-LAT/robust-llama3-8b-instruct"
-
-    adapter_id = "oat-workers/oat-gemma-apr2-checks"
-    base_path = "/workspace/gemma_2_9b_instruct"
-
-    print(f"Initializing model and probe once for all evaluations...")
     if OAT_OR_BASE == "abhayllama":
-        print(f"Loading probe from {abhayllama_probe_path} and llm from {abhayllama_model_path}")
-        probe = AbhayCheckpointProbe(checkpoint_path=abhayllama_probe_path)
-        llm = AutoPEFT("/workspace/llama_3_8b_instruct", abhayllama_model_path, "", dtype=torch.bfloat16, debug_mode=False)
-    elif OAT_OR_BASE == "llama":
-        print(f"Loading probe from {llama_probe_path} and llm from /workspace/llama_3_8b_instruct")
-        probe = AbhayCheckpointProbe(checkpoint_path=llama_probe_path)
-        llm = AutoLLM("/workspace/llama_3_8b_instruct", dtype=torch.bfloat16, debug_mode=False)
+        probe = AbhayCheckpointProbe(checkpoint_path= config["PROBE_PATHS"]["llama_3_8b_oat_linear"])
+        llm = AutoPEFT(config["BASE_PATHS"]["llama"], config["MODEL_PATHS"]["llama_3_8b_oat_linear"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
+    elif OAT_OR_BASE == "llama_base":
+        probe = AbhayCheckpointProbe(checkpoint_path=config["PROBE_PATHS"]["llama_3_8b_linear"])
+        llm = AutoLLM(config["BASE_PATHS"]["llama"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
+    elif OAT_OR_BASE == "gemma_oat_mlp":
+        probe = AbhayCheckpointProbe(checkpoint_path=config["PROBE_PATHS"]["gemma_2_9b_oat_mlp"])
+        llm = AutoPEFT(config["BASE_PATHS"]["gemma"], config["MODEL_PATHS"]["gemma_2_9b_oat_mlp"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
+    elif OAT_OR_BASE == "gemma_oat_linear":
+        probe = AbhayCheckpointProbe(checkpoint_path=config["PROBE_PATHS"]["gemma_2_9b_oat_linear"])
+        llm = AutoPEFT(config["BASE_PATHS"]["llama"], config["MODEL_PATHS"]["gemma_2_9b_oat_linear"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
+    elif OAT_OR_BASE == "gemma_base":
+        raise NotImplementedError("Gemma base model probe not trained yet")
+        llm = AutoLLM(config["BASE_PATHS"]["gemma"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
     elif OAT_OR_BASE == "latllama":
-        print(f"Loading probe from {llama_probe_path} and llm from {latllama_model_path}")
-        probe = AbhayCheckpointProbe(checkpoint_path=llama_probe_path)
-        llm = AutoLLM(latllama_model_path, dtype=torch.bfloat16, debug_mode=False)
-    elif PROBE_TYPE == "mlp":
-        probe = AbhayCheckpointProbe(checkpoint_path=mlp_probe_path)
-        if OAT_OR_BASE == "oat":
-            llm = AutoPEFT(base_path, adapter_id, mlp_model_path, dtype=torch.bfloat16, debug_mode=False)
-    elif PROBE_TYPE == "linear":
-        probe = AbhayCheckpointProbe(checkpoint_path=linear_probe_path)
-        if OAT_OR_BASE == "oat":
-            llm = AutoPEFT(base_path, adapter_id, linear_model_path, dtype=torch.bfloat16, debug_mode=False)
-    
-    if OAT_OR_BASE == "base":
-        llm = AutoLLM("/workspace/gemma_2_9b_instruct", dtype=torch.bfloat16, debug_mode=False)
+        probe = AbhayCheckpointProbe(checkpoint_path=config["PROBE_PATHS"]["llama_3_8b_lat_linear"])
+        llm = AutoLLM(config["MODEL_PATHS"]["llama_3_8b_lat"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
 
     # Load datasets once
     print(f"Loading datasets once for all evaluations...")
