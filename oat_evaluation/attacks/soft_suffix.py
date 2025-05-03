@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
+from oat_evaluation.utils import print_timey
 
 def print_mem_usage():
     print(f"    [Memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB]")
@@ -172,9 +173,10 @@ class SoftSuffixAttack(Attack):
         print(f"Starting training for {self.num_epochs} epochs with batch size {batch_size}, chunk size {self.chunk_size}, probe_loss_weight {self.probe_loss_weight}") # Added weight info
 
         total_steps = 0
+        flop_count = 0
         # --- Epoch Loop ---
         for epoch in range(self.num_epochs):
-            print(f"\n--- Epoch {epoch+1}/{self.num_epochs} ---")
+            print_timey(f"\n--- Starting Epoch {epoch+1}/{self.num_epochs} ---")
             epoch_loss = 0.0
             epoch_ce_loss = 0.0 # Accumulator for CE loss part
             epoch_probe_loss = 0.0 # Accumulator for probe loss part
@@ -203,10 +205,19 @@ class SoftSuffixAttack(Attack):
                     response_chunk = response_batch[chunk_start_in_batch:chunk_end_in_batch]
                     target_ids_chunk = target_ids_batch[chunk_start_in_batch:chunk_end_in_batch]
 
-                    print(f"Generating responses for chunk number {chunk_start_in_batch / self.chunk_size}...")
+                    print_timey(f"Performing forward pass for chunk number {chunk_start_in_batch / self.chunk_size}...")
                     new_responses, _ = generate_responses_with_suffix(prompt_chunk, suffix, response_chunk)
+                    print_timey(f"Forward pass for chunk number {chunk_start_in_batch / self.chunk_size} complete.")
                     new_logits = new_responses.responses_logits
-                    assert new_responses.activation_layers[0][0].requires_grad, "Activation layers should require grad"
+                    for resp in new_logits:
+                        # Forward FLOP approximation of k*d*2 (where k=num tokens, d=num params) 
+                        flop_count += resp.shape[0] * llm.num_params * 2
+                    for pr in prompt_chunk:
+                        # Forward FLOP approximation of k*d*2 (where k=num tokens, d=num params) 
+                        flop_count += pr.shape[0] * llm.num_params * 2
+                        flop_count += suffix.shape[0] * llm.num_params * 2
+                    if probe_to_obfuscate is not None:
+                        assert new_responses.activation_layers[0][0].requires_grad, "Activation layers should require grad"
 
                     # --- Calculate CE Loss for the chunk ---
                     ce_loss = 0.0
@@ -283,8 +294,17 @@ class SoftSuffixAttack(Attack):
                     # probe_loss_term is already detached average score, scale it
                     batch_probe_loss_accumulator += (probe_loss_term / num_chunks_in_batch) * self.probe_loss_weight * current_chunk_size # Store scaled & weighted probe loss part
 
-                    print(f"About to call .backward()...")
+                    print_timey(f"About to call .backward() for chunk number {chunk_start_in_batch / self.chunk_size}...")
                     scaled_loss.backward() # Accumulate gradients on the combined, scaled loss
+                    for resp in new_logits:
+                        # Backward FLOP approximation of k*d*4 (where k=num tokens, d=num params)
+                        flop_count += resp.shape[0] * llm.num_params * 4
+                    for pr in prompt_chunk:
+                        # Forward FLOP approximation of k*d*2 (where k=num tokens, d=num params) 
+                        flop_count += pr.shape[0] * llm.num_params * 4
+                        flop_count += suffix.shape[0] * llm.num_params * 4
+
+                    print_timey(f".backward() for chunk number {chunk_start_in_batch / self.chunk_size} complete.")
 
                     if self.debug_mode:
                         grad_norm_chunk = suffix.grad.norm().item() if suffix.grad is not None else 0
@@ -294,9 +314,11 @@ class SoftSuffixAttack(Attack):
 
                 # --- End of Chunk Loop ---
 
+                print_timey(f"Chunks complete! About to clip_grad_norm_...")
                 grad_norm_before_clip = torch.nn.utils.clip_grad_norm_([suffix], max_norm=1.0)
+                print_timey(f".clip_grad_norm_() complete. About to call optimizer.step()...")
                 optimizer.step()
-                print(f"Just finished optimizer.step() for batch at index {batch_start}...")
+                print_timey(f"Just finished optimizer.step() for batch at index {batch_start}!")
                 print_mem_usage()
                 total_steps += 1
                 self.clip_suffix_per_row(suffix, self.epsilon)
@@ -320,10 +342,12 @@ class SoftSuffixAttack(Attack):
                 # Execute callbacks if current step is in callback_steps
                 if total_steps in callback_steps:
                     attack_details = AttackDetails(
+                        flop_cost=flop_count,
                         generated_embedding_prompts=apply_suffix(prompt_embeddings, suffix),
                         generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix)
                     )
                     for callback in callbacks:
+                        print_timey(f"Executing callback {callback.__name__} for step {total_steps}...")
                         callback(attack_details)
 
                 if (total_steps) % 128 == 0:
@@ -344,24 +368,24 @@ class SoftSuffixAttack(Attack):
             avg_epoch_loss = epoch_loss / num_prompts if num_prompts > 0 else 0
             avg_epoch_ce_loss = epoch_ce_loss / num_prompts if num_prompts > 0 else 0
             avg_epoch_probe_loss = epoch_probe_loss / num_prompts if num_prompts > 0 else 0
-            print(f"--- Epoch {epoch+1} Finished --- Avg Epoch Loss: {avg_epoch_loss:.4f} (CE: {avg_epoch_ce_loss:.4f}, Weighted Probe: {avg_epoch_probe_loss:.4f}) ---")
+            print_timey(f"--- Epoch {epoch+1} Finished --- Avg Epoch Loss: {avg_epoch_loss:.4f} (CE: {avg_epoch_ce_loss:.4f}, Weighted Probe: {avg_epoch_probe_loss:.4f}) ---")
 
         # --- End of Epoch Loop ---
 
         if generate_final_responses:
-            print("Training finished. Generating final responses with the optimized suffix...")
+            print_timey("Training finished. Generating final responses with the optimized suffix...")
             # Return the final responses using the optimized suffix on the original (full) data
             final_responses, final_prompt_embeddings = generate_responses_with_suffix(
                 prompt_embeddings, # Use all original prompt embeddings
                 suffix,
                 harmful_embeddings # Use all original harmful embeddings for forcing
             )
-            print("Final response generation complete.")
+            print_timey("Final response generation complete.")
         else:
             final_responses = None
             final_prompt_embeddings = None
 
-        return final_responses, AttackDetails(generated_embedding_prompts=final_prompt_embeddings, generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix)) 
+        return final_responses, AttackDetails(flop_cost=flop_count, generated_embedding_prompts=final_prompt_embeddings, generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix)) 
 
     @property
     def is_universal(self) -> bool:

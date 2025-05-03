@@ -107,6 +107,12 @@ class LLM(ABC):
 
     @property
     @abstractmethod
+    def num_params(self) -> int:
+        """The number of parameters in the model"""
+        pass
+
+    @property
+    @abstractmethod
     def vocab_size(self) -> int:
         """The size of the vocabulary of the model (number of possible tokens, i.e. number of columns in the logits tensor)"""
         pass

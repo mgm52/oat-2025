@@ -1,5 +1,6 @@
 import yaml
 import os
+from datetime import datetime
 
 def load_config_and_set_vars():
     # Try a few relative paths
@@ -14,6 +15,12 @@ def load_config_and_set_vars():
         config = yaml.safe_load(f)
     
     os.environ["OPENAI_API_KEY"] = config["OPENAI_API_KEY"]
-    os.environ["HF_HOME"] = config["HUGGINGFACE_HOME"]
+    os.environ["HF_HOME"] = config["HF_HOME"]
+    os.environ["HF_HUB_CACHE"] = f"{config['HF_HOME']}/hub"
+    os.environ["HF_TOKEN"] = config["HF_TOKEN"]
     
     return config
+
+def print_timey(message: str):
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+    print(f"[{current_time}] {message}")

@@ -11,7 +11,7 @@ MODEL_PATHS:
   llama_3_8b_oat_linear: "Mechanistic-Anomaly-Detection/llama3-oat-generation-linear"
   llama_3_8b_lat: "LLM-LAT/robust-llama3-8b-instruct"
 BASE_PATHS:
-  gemma: "/workspace/gemma_2_9b_instruct"
+  gemma: "/google/gemma-2-9b-it"
   llama: "/workspace/llama_3_8b_instruct" 
 HF_HOME: "/workspace/.cache/huggingface" # Defaults to "~/.cache/huggingface"... But /workspace/ is runpod's network volume
 HF_TOKEN: "hf_<INSERT_HERE>"
