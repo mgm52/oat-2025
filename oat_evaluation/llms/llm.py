@@ -5,10 +5,12 @@ from typing import Callable, List, Dict, Any, Optional, Tuple, Union
 
 import torch
 
+
 class TokenSelectionMethod(Enum):
     ALL_RESPONSE = "all_response"
     LAST_RESPONSE_TOKEN = "last_response_token"
     LAST_USER_TOKEN = "last_user_token"
+
 
 class ExposedActivationsRequest():
     # TODO: add argument for funcions to run over extracted layers during forward pass (via hooks)
@@ -16,8 +18,9 @@ class ExposedActivationsRequest():
         self.extract_layers_indices = extract_layers_indices
         self.token_selection_method = token_selection_method
 
+
 class LLMResponses():
-    def __init__(self, responses_strings: List[str], responses_logits: Optional[list[torch.Tensor]], activation_layers: Optional[list[list[torch.Tensor]]]):
+    def __init__(self, responses_strings: List[str], responses_logits: Optional[list[torch.Tensor]], activation_layers: Optional[list[list[torch.Tensor]]] = None):
         """
         Initialize LLMResponses with generated responses, logits, and activation layers.
         
@@ -68,6 +71,7 @@ class LLMResponses():
         return LLMResponses(responses_strings=self.responses_strings + other.responses_strings,
                             responses_logits=responses_logits,
                             activation_layers=activation_layers)
+
 
 class LLM(ABC):
     @abstractmethod
@@ -136,6 +140,12 @@ class LLM(ABC):
     @abstractmethod
     def num_layers(self) -> int:
         """The number of layers in the model (specifically, the max number of activation layers to extract)"""
+        pass
+
+    @property
+    @abstractmethod
+    def num_params(self) -> int:
+        """The number of parameters in the model"""
         pass
 
     @property

@@ -4,10 +4,12 @@ from enum import Enum
 import time
 from typing import Callable, List, Dict, Any, Optional, Tuple, Union
 
+from prompt_toolkit import prompt
 import torch
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from oat_evaluation.llms.llm import LLM, ExposedActivationsRequest, LLMResponses, TokenSelectionMethod
+from oat_evaluation.utils import print_timey
 from contextlib import contextmanager
 
 @contextmanager
@@ -27,16 +29,20 @@ class AutoLLM(LLM):
 
     def __init__(self, model_path, dtype=torch.bfloat16, debug_mode=False):
         self.debug_mode = debug_mode
-        print(f"Time: {time.time()}: Loading model from {model_path}...")
+        print_timey(f"Loading model from {model_path}...")
 
         self._model = AutoModelForCausalLM.from_pretrained(
-            model_path, device_map="cuda", torch_dtype=dtype
+            model_path, device_map="cuda", torch_dtype=dtype, trust_remote_code=True
         )
-        print(f"Time: {time.time()}: Model loaded. Loading tokenizer...")
-        self._tokenizer = AutoTokenizer.from_pretrained(model_path)
-        print(f"Tokenizer loaded.")
+        print_timey("Model loaded. Loading tokenizer...")
+        self._tokenizer = AutoTokenizer.from_pretrained("/workspace/llama")
+        print_timey("Tokenizer loaded.")
 
         self.prepare_model()
+
+    @property
+    def num_params(self) -> int:
+        return self._num_params
 
     def set_offsets(self, target_layer_offset: int = 0, target_token_start_offset: int = 0, target_token_end_offset: int = 0):
         self.target_layer_offset = target_layer_offset
@@ -46,6 +52,9 @@ class AutoLLM(LLM):
 
     def prepare_model(self):
         print(f"Preparing model...")
+
+        self._num_params = self._model.num_parameters()
+
         # Consider disabling grad here, until an attack is run...?
         # Pad from left, in case we run a soft-suffix attack...
         self._tokenizer.padding_side = "left"
@@ -143,11 +152,13 @@ class AutoLLM(LLM):
             ).to(self._model.device)
 
             if self.debug_mode:
-                print(f"About to forward with tokenized_chat: {tokenized_chat}")
-                print(f"About to forward with tokenized_chat.input_ids.shape: {tokenized_chat['input_ids'].shape}")
-                print(f"About to forward with tokenized_chat.attention_mask.shape: {tokenized_chat['attention_mask'].shape}")
+                print_timey(f"About to generate with tokenized_chat: {tokenized_chat}")
+                print_timey(f"About to generate with tokenized_chat.input_ids.shape: {tokenized_chat['input_ids'].shape}")
+                print_timey(f"About to generate with tokenized_chat.attention_mask.shape: {tokenized_chat['attention_mask'].shape}")
             
             outputs = self._model.generate(**tokenized_chat, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
+            if self.debug_mode:
+                print_timey(f"Model generation complete. Decoding...")
             start_length = tokenized_chat["input_ids"].shape[1]
 
             decoded_responses = [
@@ -156,19 +167,23 @@ class AutoLLM(LLM):
             ]
 
             if self.debug_mode:
-                print(f"Outputs.sequences: {outputs.sequences}")
-                print(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
+                print_timey(f"Outputs.sequences: {outputs.sequences}")
+                print_timey(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
 
             del outputs
 
             # TODO: Update generate_responses_forced() to also handle full conversations
             #   list[list[dict]]: list of conversations, e.g. [[{"role": "user", "content": ...}, ...]]
-            if isinstance(prompts[0], str):
+            if isinstance(prompt[0], str):
+                if self.debug_mode:
+                    print_timey(f"Force-forwarding responses to get logits & activations...")
                 forced_responses = self.generate_responses_forced(
                     prompts,
                     decoded_responses,
                     exposed_activations_request=exposed_activations_request
                 )
+                if self.debug_mode:
+                    print_timey(f"Force-forwarding complete. Returning LLMResponses!")
 
                 return LLMResponses(
                     responses_strings=decoded_responses,
@@ -184,12 +199,12 @@ class AutoLLM(LLM):
             if self.debug_mode: print(f"Generated gen embeddings of shapes {[e.shape for e in gen_embeddings]}...")
             # now perform left-padding
             gen_embeddings_tensor, attention_masks = self._left_pad_embeddings(gen_embeddings)
-            if self.debug_mode: print(f"Turned into padded tensor of shape {gen_embeddings_tensor.shape}, with attention masks of shape {attention_masks.shape}...")
+            if self.debug_mode: print_timey(f"Turned into padded tensor of shape {gen_embeddings_tensor.shape}, with attention masks of shape {attention_masks.shape}... About to generate!")
 
             outputs = self._model.generate(inputs_embeds=gen_embeddings_tensor, attention_mask=attention_masks, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
             start_length = gen_embeddings_tensor.shape[1]
 
-            if self.debug_mode: print(f"Outputs.sequences (len {len(outputs.sequences)}), shapes {[s.shape for s in outputs.sequences]}: {outputs.sequences}")
+            if self.debug_mode: print_timey(f"Generation complete. Outputs.sequences (len {len(outputs.sequences)}), shapes {[s.shape for s in outputs.sequences]}: {outputs.sequences}")
 
             decoded_responses = [
                 self._tokenizer.decode(seq, skip_special_tokens=True)
@@ -313,12 +328,15 @@ class AutoLLM(LLM):
         
     def string_to_token_ids(self, input_string, add_response_ending=False):
         """Output shape (seq_len)"""
+        #print_timey(f"String to token ids: input string of length {len(input_string)}...")
         input_tokens = self._tokenizer(input_string, return_tensors="pt", add_special_tokens=False)["input_ids"][0].to(self._model.device)
         if add_response_ending:
             if self.debug_mode:
-                print(f"Adding response ending of length {self._chat_outro_token_ids.shape[0]} (specifically: {self._chat_outro_token_ids}) to input tokens of length {input_tokens.shape[0]}...")
+                print_timey(f"Adding response ending of length {self._chat_outro_token_ids.shape[0]} (specifically: {self._chat_outro_token_ids}) to input tokens of length {input_tokens.shape[0]}...")
             return torch.cat((input_tokens, self._chat_outro_token_ids), dim=0)
         else:
+            if self.debug_mode:
+                print_timey(f"String to token ids: returning tokens of length {input_tokens.shape[0]}...")
             return input_tokens
 
     def _token_ids_to_embeddings(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -374,6 +392,9 @@ class AutoLLM(LLM):
                 responses_logits=all_logits,
                 activation_layers=all_activations if exposed_activations_request else None
             )
+        
+        if self.debug_mode:
+            print_timey(f"Generating responses forced for {len(prompts_or_embeddings)} prompts...")
 
         assert len(prompts_or_embeddings) == len(target_responses_or_embeddings)
         if isinstance(prompts_or_embeddings[0], torch.Tensor):
@@ -445,8 +466,12 @@ class AutoLLM(LLM):
             if self.debug_mode:
                 print(f"Tokenized chat: {tokenized_chat}")
                 print(f"About to forward with tokenized_chat, with input_ids.shape: {tokenized_chat['input_ids'].shape}")
+            if self.debug_mode:
+                print_timey(f"About to force-forward string inputs...")
             with add_fwd_hooks(fwd_extraction_hooks):
                 outputs = self._model.forward(**tokenized_chat)
+            if self.debug_mode:
+                print_timey(f"Force-forwarding complete. Now turning strings into token ids...")
             original_response_lengths = [self.string_to_token_ids(response).shape[0] for response in target_responses_or_embeddings]
         else:
             chat_embeddings = [self._embeddings_to_chat_embeddings(prompt, response) for prompt, response in zip(prompts_or_embeddings, target_responses_or_embeddings)]
@@ -457,12 +482,16 @@ class AutoLLM(LLM):
                 print(f"Chat embeddings tensor: {chat_embeddings_tensor}")
                 print(f"Attention masks: {attention_masks}")
                 print(f"About to forward with embeddings tensor shape: {chat_embeddings_tensor.shape}")
+            if self.debug_mode:
+                print_timey(f"About to force-forward embedding inputs...")
             with add_fwd_hooks(fwd_extraction_hooks):
                 outputs = self._model.forward(
                     inputs_embeds=chat_embeddings_tensor,
                     attention_mask=attention_masks,
                     #use_cache=False # test to try preventing graph issues...
                 )
+            if self.debug_mode:
+                print_timey(f"Force-forwarding complete.")
             original_response_lengths = [response.shape[1] for response in target_responses_or_embeddings]
 
         if self.debug_mode:
@@ -528,7 +557,7 @@ class AutoLLM(LLM):
                     if add_response_ending:
                          act_slice_end = activation_seq_len - 1 # Include tokens for outro
 
-                    if self.debug_mode:
+                    if self.debug_mode and slice_map is not None and len(slice_map) > batch_idx and slice_map[batch_idx] is not None and len(slice_map[batch_idx]) > layer_idx:
                         slice_map[batch_idx][layer_idx] = (act_slice_start, act_slice_end)
 
                     # Basic validation for activation slice indices
@@ -543,7 +572,7 @@ class AutoLLM(LLM):
                     token_activations = full_layer_activation[batch_idx, act_slice_start:act_slice_end, :]
                     # token_activations shape: (num_req_tokens, hidden_size)
 
-                    if self.debug_mode and final_activation_layers:
+                    if False and self.debug_mode and final_activation_layers:
                         for batch_idx, logit in enumerate(trimmed_logits):
                             # 1) token strings
                             pred_ids     = logit.argmax(dim=-1)
@@ -552,24 +581,25 @@ class AutoLLM(LLM):
 
                             # 2) activations
                             for layer_idx, acts in enumerate(final_activation_layers[batch_idx]):
-                                start, end = slice_map[batch_idx][layer_idx]
-                                full_len   = raw_activations_list[layer_idx].shape[1]
+                                if slice_map is not None and len(slice_map) > batch_idx and slice_map[batch_idx] is not None and len(slice_map[batch_idx]) > layer_idx and slice_map[batch_idx][layer_idx] is not None:
+                                    start, end = slice_map[batch_idx][layer_idx]
+                                    full_len   = raw_activations_list[layer_idx].shape[1]
 
-                                kept = end - start
-                                trimmed = full_len - kept
-                                print(f"[Debug]  Layer {layer_idx}: full_seq={full_len}, kept_range={start}:{end} "
-                                    f"({kept} tokens kept, {trimmed} trimmed), acts.shape={tuple(acts.shape)}")
+                                    kept = end - start
+                                    trimmed = full_len - kept
+                                    print(f"[Debug]  Layer {layer_idx}: full_seq={full_len}, kept_range={start}:{end} "
+                                        f"({kept} tokens kept, {trimmed} trimmed), acts.shape={tuple(acts.shape)}")
 
-                                # per‐index status
-                                status = [(i, 'kept' if start <= i < end else 'trimmed')
-                                        for i in range(full_len)]
-                                print(f"[Debug]    indices: {status}")
+                                    # per‐index status
+                                    status = [(i, 'kept' if start <= i < end else 'trimmed')
+                                            for i in range(full_len)]
+                                    print(f"[Debug]    indices: {status}")
 
-                                # sanity check
-                                assert acts.shape[0] == len(pred_tokens), (
-                                    f"Mismatch on batch {batch_idx}, layer {layer_idx}: "
-                                    f"{acts.shape[0]} activations vs {len(pred_tokens)} tokens"
-                                )
+                                    # sanity check
+                                    assert acts.shape[0] == len(pred_tokens), (
+                                        f"Mismatch on batch {batch_idx}, layer {layer_idx}: "
+                                        f"{acts.shape[0]} activations vs {len(pred_tokens)} tokens"
+                                    )
 
                     # Append to the correct place in the final structure
                     final_activation_layers[batch_idx].append(token_activations)
@@ -581,9 +611,12 @@ class AutoLLM(LLM):
                      if final_activation_layers[0]:
                          print(f"First layer tensor shape for first batch item: {final_activation_layers[0][0].shape}")
 
+        if self.debug_mode:
+            print_timey(f"Returning LLMResponses from forced forward!")
+
         return LLMResponses(
             responses_strings=decoded_responses,
-            responses_logits=trimmed_logits, # list length (batch_size), each element shape (response_length, vocab_size)
+            responses_logits=trimmed_logits, # list length (batch_size), each element shape (response_length (varying), vocab_size)
             activation_layers=final_activation_layers # list (batch_size) -> list (num_req_layers) -> tensor (num_req_tokens, hidden_size)
         )
 

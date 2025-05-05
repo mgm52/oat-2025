@@ -19,7 +19,8 @@ class AttackDetails:
     flop_cost: Optional[int] = None
     generated_str_prompts: Optional[List[str]] = None
     generated_embedding_prompts: Optional[List[torch.Tensor]] = None
-    generated_embedding_attack_function: Optional[Callable] = None
+    generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None
+    generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
 
     def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
         if not isinstance(other, AttackDetails):
@@ -28,8 +29,8 @@ class AttackDetails:
                              (self.generated_str_prompts or []) + (other.generated_str_prompts or []),
                              (self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
                              (self.generated_embedding_attack_function or other.generated_embedding_attack_function),
+                             (self.generated_str_attack_function or other.generated_str_attack_function)
         )
-
 
 
 class Attack(ABC):
