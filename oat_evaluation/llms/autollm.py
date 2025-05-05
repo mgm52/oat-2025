@@ -174,7 +174,7 @@ class AutoLLM(LLM):
 
             # TODO: Update generate_responses_forced() to also handle full conversations
             #   list[list[dict]]: list of conversations, e.g. [[{"role": "user", "content": ...}, ...]]
-            if isinstance(prompt[0], str):
+            if isinstance(prompts[0], str):
                 if self.debug_mode:
                     print_timey(f"Force-forwarding responses to get logits & activations...")
                 forced_responses = self.generate_responses_forced(
