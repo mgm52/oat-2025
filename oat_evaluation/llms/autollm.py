@@ -35,7 +35,7 @@ class AutoLLM(LLM):
             model_path, device_map="cuda", torch_dtype=dtype, trust_remote_code=True
         )
         print_timey("Model loaded. Loading tokenizer...")
-        self._tokenizer = AutoTokenizer.from_pretrained("/workspace/llama")
+        self._tokenizer = AutoTokenizer.from_pretrained(model_path)
         print_timey("Tokenizer loaded.")
 
         self.prepare_model()
