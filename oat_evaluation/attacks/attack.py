@@ -17,12 +17,14 @@ class AttackDetails():
         flop_cost: Optional[int] = None,
         generated_str_prompts: Optional[List[str]] = None,
         generated_embedding_prompts: Optional[List[torch.Tensor]] = None,
-        generated_embedding_attack_function: Optional[Callable] = None
+        generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None,
+        generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
     ):
         self.flop_cost = flop_cost
         self.generated_str_prompts = generated_str_prompts
         self.generated_embedding_prompts = generated_embedding_prompts
         self.generated_embedding_attack_function = generated_embedding_attack_function
+        self.generated_str_attack_function = generated_str_attack_function
 
 class Attack(ABC):
     @abstractmethod

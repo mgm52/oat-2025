@@ -16,7 +16,7 @@ class ExposedActivationsRequest():
         self.token_selection_method = token_selection_method
 
 class LLMResponses():
-    def __init__(self, responses_strings: List[str], responses_logits: List[torch.Tensor], activation_layers: List[List[torch.Tensor]]):
+    def __init__(self, responses_strings: List[str], responses_logits: List[torch.Tensor], activation_layers: Optional[List[List[torch.Tensor]]] = None):
         """
         Initialize LLMResponses with generated responses, logits, and activation layers.
         

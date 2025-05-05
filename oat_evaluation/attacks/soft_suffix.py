@@ -205,9 +205,10 @@ class SoftSuffixAttack(Attack):
                     response_chunk = response_batch[chunk_start_in_batch:chunk_end_in_batch]
                     target_ids_chunk = target_ids_batch[chunk_start_in_batch:chunk_end_in_batch]
 
-                    print_timey(f"Performing forward pass for chunk number {chunk_start_in_batch / self.chunk_size}...")
+                    print_timey(f"Performing forward pass for chunk number {1 + (chunk_start_in_batch / self.chunk_size)} of {num_chunks_in_batch}...")
                     new_responses, _ = generate_responses_with_suffix(prompt_chunk, suffix, response_chunk)
-                    print_timey(f"Forward pass for chunk number {chunk_start_in_batch / self.chunk_size} complete.")
+                    if llm.debug_mode:
+                        print_timey(f"Forward pass for chunk number {1 + (chunk_start_in_batch / self.chunk_size)} of {num_chunks_in_batch} complete.")
                     new_logits = new_responses.responses_logits
                     for resp in new_logits:
                         # Forward FLOP approximation of k*d*2 (where k=num tokens, d=num params) 
@@ -294,7 +295,7 @@ class SoftSuffixAttack(Attack):
                     # probe_loss_term is already detached average score, scale it
                     batch_probe_loss_accumulator += (probe_loss_term / num_chunks_in_batch) * self.probe_loss_weight * current_chunk_size # Store scaled & weighted probe loss part
 
-                    print_timey(f"About to call .backward() for chunk number {chunk_start_in_batch / self.chunk_size}...")
+                    print_timey(f"About to call .backward() for chunk number {1 + (chunk_start_in_batch / self.chunk_size)} of {num_chunks_in_batch}...")
                     scaled_loss.backward() # Accumulate gradients on the combined, scaled loss
                     for resp in new_logits:
                         # Backward FLOP approximation of k*d*4 (where k=num tokens, d=num params)
@@ -304,7 +305,8 @@ class SoftSuffixAttack(Attack):
                         flop_count += pr.shape[0] * llm.num_params * 4
                         flop_count += suffix.shape[0] * llm.num_params * 4
 
-                    print_timey(f".backward() for chunk number {chunk_start_in_batch / self.chunk_size} complete.")
+                    if llm.debug_mode:
+                        print_timey(f".backward() for chunk number {1 + (chunk_start_in_batch / self.chunk_size)} of {num_chunks_in_batch} complete.")
 
                     if self.debug_mode:
                         grad_norm_chunk = suffix.grad.norm().item() if suffix.grad is not None else 0
@@ -314,9 +316,8 @@ class SoftSuffixAttack(Attack):
 
                 # --- End of Chunk Loop ---
 
-                print_timey(f"Chunks complete! About to clip_grad_norm_...")
+                print_timey(f"Chunks complete! About to call optimizer.step()...")
                 grad_norm_before_clip = torch.nn.utils.clip_grad_norm_([suffix], max_norm=1.0)
-                print_timey(f".clip_grad_norm_() complete. About to call optimizer.step()...")
                 optimizer.step()
                 print_timey(f"Just finished optimizer.step() for batch at index {batch_start}!")
                 print_mem_usage()
@@ -385,7 +386,12 @@ class SoftSuffixAttack(Attack):
             final_responses = None
             final_prompt_embeddings = None
 
-        return final_responses, AttackDetails(flop_cost=flop_count, generated_embedding_prompts=final_prompt_embeddings, generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix)) 
+        attack_details = AttackDetails(
+            flop_cost=flop_count, 
+            generated_embedding_prompts=final_prompt_embeddings, 
+            generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix)
+        )
+        return final_responses, attack_details 
 
     @property
     def is_universal(self) -> bool:
