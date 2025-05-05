@@ -8,10 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
-
-def print_mem_usage():
-    print(f"    [Memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB]")
-    print(f"    [Memory reserved: {torch.cuda.memory_reserved() / 1024**2:.2f} MB]")
+from oat_evaluation.utils.logs import print_mem_usage
 
 
 class SoftSuffixAttack(Attack):

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from enum import Enum
+from http.client import responses
 from typing import Callable, List, Dict, Any, Optional, Tuple, Union
 
 import torch
@@ -16,7 +17,7 @@ class ExposedActivationsRequest():
         self.token_selection_method = token_selection_method
 
 class LLMResponses():
-    def __init__(self, responses_strings: List[str], responses_logits: List[torch.Tensor], activation_layers: List[List[torch.Tensor]]):
+    def __init__(self, responses_strings: List[str], responses_logits: Optional[list[torch.Tensor]], activation_layers: Optional[list[list[torch.Tensor]]]):
         """
         Initialize LLMResponses with generated responses, logits, and activation layers.
         
@@ -28,6 +29,17 @@ class LLMResponses():
                 - Inner inner list: length = num_req_layers
                 - Each tensor: shape = (num_req_tokens, hidden_size)
         """
+        # FIXME: These checks don't work, since logits and activation layers are sometimes not set
+        # bs_strings = len(responses_strings)
+        # bs_logits = len(responses_logits)
+        # bs_activations = len(activation_layers[0]) if bs_strings else 0
+
+        # if not (bs_strings == bs_logits == bs_activations):
+        #      raise ValueError(f"Batch size mismatch: "
+        #                       f"strings ({bs_strings}), "
+        #                       f"logits ({bs_logits}), "
+        #                       f"activations ({bs_activations})")
+
         self.responses_strings = responses_strings
         self.responses_logits = responses_logits
         self.activation_layers = activation_layers 
@@ -35,6 +47,27 @@ class LLMResponses():
     @property
     def batch_size(self) -> int:
         return max(len(self.responses_strings), len(self.responses_logits))
+    
+    def __add__(self, other: 'LLMResponses') -> 'LLMResponses':
+        """
+        Concatenates this LLMResponses object with another.
+
+        Args:
+            other: Another LLMResponses object.
+
+        Returns:
+            A new LLMResponses object containing the combined data.
+
+        Raises:
+            TypeError: If 'other' is not an LLMResponses instance.
+        """
+        if not isinstance(other, LLMResponses):
+            return NotImplementedError(f"LLMResponse merging not implemented for type {type(other)}")
+        responses_logits = self.responses_logits + other.responses_logits if self.responses_logits and other.responses_logits else None
+        activation_layers = self.activation_layers + other.activation_layers if self.activation_layers and other.activation_layers else None
+        return LLMResponses(responses_strings=self.responses_strings + other.responses_strings,
+                            responses_logits=responses_logits,
+                            activation_layers=activation_layers)
 
 class LLM(ABC):
     @abstractmethod

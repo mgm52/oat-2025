@@ -77,7 +77,7 @@ class AutoLLM(LLM):
     # And check that the first "prediction" logit corresponds to the first response token...
     def generate_responses(
         self,
-        prompts: Union[List[str], List[torch.Tensor]],
+        prompts: Union[List[str], List[torch.Tensor], list[list[dict]]],
         exposed_activations_request: Optional[ExposedActivationsRequest] = None,
         max_new_tokens: int = 64
     ) -> LLMResponses:
@@ -85,7 +85,10 @@ class AutoLLM(LLM):
         Generate responses for the given prompts using the model.
         
         Args:
-            prompts: The prompts to generate responses for, as a list of strings
+            prompts: The prompts to generate responses for. Accepted formats include:
+                list[str]: list of prompt strings
+                list[torch.Tensor]: list of tensors, each representing a prompt
+                list[list[dict]]: list of conversations, e.g. [[{"role": "user", "content": ...}, ...]]
             exposed_activations_request: Request specifying which activation layers to extract
             
         Returns:
@@ -119,12 +122,17 @@ class AutoLLM(LLM):
                 activation_layers=all_activations if exposed_activations_request else None
             )
 
-        if isinstance(prompts[0], str):
-            # Add special token chat template & padding!
-            messages = [
-                [{"role": "user", "content": prompt}]
-                for prompt in prompts
-            ]
+        if isinstance(prompts[0], str) or isinstance(prompts[0], list):
+            if isinstance(prompts[0], list):
+                # Conversation histories
+                assert isinstance(prompts[0][0], dict)
+                messages = prompts
+            else:
+                # Add special token chat template & padding!
+                messages = [
+                    [{"role": "user", "content": prompt}]
+                    for prompt in prompts
+                ]
             tokenized_chat = self._tokenizer.apply_chat_template(
                 messages,
                 tokenize=True,
@@ -137,6 +145,7 @@ class AutoLLM(LLM):
             if self.debug_mode:
                 print(f"About to forward with tokenized_chat: {tokenized_chat}")
                 print(f"About to forward with tokenized_chat.input_ids.shape: {tokenized_chat['input_ids'].shape}")
+                print(f"About to forward with tokenized_chat.attention_mask.shape: {tokenized_chat['attention_mask'].shape}")
             
             outputs = self._model.generate(**tokenized_chat, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
             start_length = tokenized_chat["input_ids"].shape[1]
@@ -152,18 +161,22 @@ class AutoLLM(LLM):
 
             del outputs
 
-            forced_responses = self.generate_responses_forced(
-                prompts,
-                decoded_responses,
-                exposed_activations_request=exposed_activations_request
-            )
+            # TODO: Update generate_responses_forced() to also handle full conversations
+            #   list[list[dict]]: list of conversations, e.g. [[{"role": "user", "content": ...}, ...]]
+            if isinstance(prompts[0], str):
+                forced_responses = self.generate_responses_forced(
+                    prompts,
+                    decoded_responses,
+                    exposed_activations_request=exposed_activations_request
+                )
 
-            return LLMResponses(
-                responses_strings=decoded_responses,
-                responses_logits=forced_responses.responses_logits,
-                activation_layers=forced_responses.activation_layers if exposed_activations_request else None
-            )
-
+                return LLMResponses(
+                    responses_strings=decoded_responses,
+                    responses_logits=forced_responses.responses_logits,
+                    activation_layers=forced_responses.activation_layers if exposed_activations_request else None
+                )
+            else:
+                return LLMResponses(decoded_responses, None, None)
         else:
             responses_embeddings = []
 
@@ -407,15 +420,20 @@ class AutoLLM(LLM):
                 ) for i, layer in enumerate(target_layers)
             ]
 
-        if isinstance(prompts_or_embeddings[0], str):
+        if isinstance(prompts_or_embeddings[0], str) or isinstance(prompts_or_embeddings[0], list):
             # Add special token chat template & padding!
-            messages = [
-                [
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": target_response}
+            if isinstance(prompts_or_embeddings[0], str):
+                messages = [
+                    [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": target_response}
+                    ]
+                    for prompt, target_response in zip(prompts_or_embeddings, target_responses_or_embeddings)
                 ]
-                for prompt, target_response in zip(prompts_or_embeddings, target_responses_or_embeddings)
-            ]
+            else:
+                messages = prompts_or_embeddings
+                for conv, target_response in zip(prompts_or_embeddings, target_responses_or_embeddings):
+                    conv.append({"role": "assistant", "content": target_response})
             tokenized_chat = self._tokenizer.apply_chat_template(
                 messages,
                 tokenize=True,
