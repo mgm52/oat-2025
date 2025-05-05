@@ -8,8 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
-from oat_evaluation.utils.logs import print_mem_usage
-from oat_evaluation.utils import print_timey
+from oat_evaluation.utils import print_mem_usage, print_timey
 
 
 class SoftSuffixAttack(Attack):

@@ -12,10 +12,10 @@ from oat_evaluation.attacks import attack
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
-from oat_evaluation.utils.logs import print_mem_usage
-# from .pair_utils.main import memory_usage_psutil
+from oat_evaluation.utils import print_mem_usage
 from .pair_utils.system_prompts import get_attacker_system_prompts, get_judge_system_prompt
 from .pair_utils.common import extract_json, get_init_msg, process_target_response  
+
 
 class LLMsNotSetException(Exception): ...
 

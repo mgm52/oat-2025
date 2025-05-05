@@ -1,6 +1,8 @@
 import yaml
 import os
 from datetime import datetime
+import torch
+
 
 def load_config_and_set_vars():
     # Try a few relative paths
@@ -24,3 +26,9 @@ def load_config_and_set_vars():
 def print_timey(message: str):
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
     print(f"[{current_time}] {message}")
+
+
+def print_mem_usage():
+    print(f"    [Memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB]")
+    print(f"    [Memory reserved: {torch.cuda.memory_reserved() / 1024**2:.2f} MB]")
+    return torch.cuda.memory_allocated() / 1024**2
