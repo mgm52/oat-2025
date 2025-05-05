@@ -3,6 +3,7 @@ import math
 import os
 import re
 from sys import argv
+import torch
 import tqdm
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -66,10 +67,16 @@ class PAIRAttack(Attack):
         
         # Load attack, target and judge LLMs
         # Fallback on the target/victim LLM if the attack LLM and judge LLM are not set
-        # TODO: Ensure no gradient updates are done with these LLMs
+        # Ensure no gradient updates are done with these LLMs
         attack_llm = self.attack_llm or llm
         judge_llm = self.judge_llm or llm
         target_llm = llm
+        
+        # Disable gradients for all LLMs if they have _model field and it's an nn.Module
+        for model in [attack_llm, judge_llm, target_llm]:
+            if hasattr(model, '_model') and isinstance(model._model, torch.nn.Module):
+                for param in model._model.parameters():
+                    param.requires_grad = False
         
         final_llm_responses = LLMResponses([], [], [])
         final_attack_details = AttackDetails(None, None, None, None)
@@ -211,8 +218,8 @@ Example of a correct response:
             
             # Truncate conversation to avoid context length issues
             # Conversations alternate user/assistant/user/assistant/...
-            for conv in convs:
-                conv = conv[-2*(keep_last_n):]
+            for i in range(len(convs)):
+                convs[i] = convs[i][-2*(keep_last_n):]
 
             # Early stopping if jailbreak has succeeded
             if any([score == 10 for score in judge_scores]):

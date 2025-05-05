@@ -13,7 +13,7 @@ plotly
 seaborn
 pandas
 wandb
-# flash-attn
+# flash-attn --no-build-isolation
 numpy==1.26.4
 pyod
 https://github.com/ejnnr/cupbearer/archive/abhay_update.zip
