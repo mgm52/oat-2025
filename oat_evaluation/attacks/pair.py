@@ -80,11 +80,12 @@ class PAIRAttack(Attack):
         
         final_llm_responses = LLMResponses([], [], [])
         final_attack_details = AttackDetails(None, None, None, None)
-        for prompt, target in zip(prompts, harmful_responses):
-            llm_responses, attack_details = self._run_single_attack(attack_llm, target_llm, judge_llm, prompt, target)
-            # Merge outputs
-            final_llm_responses += llm_responses
-            final_attack_details += attack_details
+        with torch.inference_mode():
+            for prompt, target in zip(prompts, harmful_responses):
+                llm_responses, attack_details = self._run_single_attack(attack_llm, target_llm, judge_llm, prompt, target)
+                # Merge outputs
+                final_llm_responses += llm_responses
+                final_attack_details += attack_details
         
         return final_llm_responses, final_attack_details
 
@@ -161,7 +162,7 @@ Example of a correct response:
                     batch_indices = indices_to_regenerate[batch_start:batch_start+batchsize]
                     convs_subset = [convs[i] for i in batch_indices]
                     # Generate outputs 
-                    attacker_outputs = attack_llm.generate_responses(convs_subset, max_new_tokens=self.max_new_attack_tokens).responses_strings
+                    attacker_outputs = attack_llm.generate_responses(convs_subset, max_new_tokens=self.max_new_attack_tokens, requires_grad=False).responses_strings
                     # Check for valid outputs and update the list
                     for i, full_output in enumerate(attacker_outputs):
                         orig_index = batch_indices[i]

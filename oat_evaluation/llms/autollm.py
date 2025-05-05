@@ -85,7 +85,7 @@ class AutoLLM(LLM):
         # Start with default or reduce-overhead. max-autotune takes longer initially.
         try:
             # Ensure model is fully on device before compiling if using device_map
-            # self._model.to(self.device) # May not be needed with device_map="auto"
+            self._model.to(self.device) # May not be needed with device_map="auto"
             print_timey("Attempting to compile model with torch.compile...")
             # Note: Compilation might fail for some models or require specific PyTorch/CUDA versions.
             self._model = torch.compile(self._model, mode="reduce-overhead", dynamic=True) # dynamic=True might help with variable sequence lengths

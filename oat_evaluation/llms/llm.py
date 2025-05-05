@@ -79,7 +79,8 @@ class LLM(ABC):
         self,
         prompts_or_embeddings: Union[List[str], List[torch.Tensor]],
         exposed_activations_request: Optional[ExposedActivationsRequest] = None,
-        max_new_tokens: int = 64
+        max_new_tokens: int = 64,
+        requires_grad: bool = True
     ) -> LLMResponses:
         """
         Generate responses for the given prompts using the model.
@@ -100,7 +101,8 @@ class LLM(ABC):
         prompts_or_embeddings: Union[List[str], List[torch.Tensor]],
         target_responses_or_embeddings: Union[List[str], List[torch.Tensor]],
         exposed_activations_request: Optional[ExposedActivationsRequest] = None,
-        add_response_ending: bool = False
+        add_response_ending: bool = False,
+        requires_grad: bool = True
     ) -> LLMResponses:
         """
         Generate responses for the given prompts using the model, while forcing the outputs.
