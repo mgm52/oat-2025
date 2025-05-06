@@ -3,6 +3,7 @@ import json
 import re
 import torch
 from typing import List, Any, Optional, Tuple, Callable
+from tqdm import tqdm
 
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.api_llm import PairAttackerResponse
@@ -79,7 +80,7 @@ class PAIRAttack(Attack):
         final_llm_responses = LLMResponses([], [], [])
         final_attack_details = AttackDetails(None, None, None, None)
         with torch.inference_mode():
-            for prompt, target in zip(prompts, harmful_responses):
+            for prompt, target in tqdm(zip(prompts, harmful_responses), total=len(prompts), desc="Processing prompts"):
                 for attempt in range(self.max_cuda_oom_retries):
                     try:
                         llm_responses, attack_details = self._run_single_attack(attack_llm, target_llm, judge_llm, prompt, target)
@@ -146,7 +147,7 @@ Example of a correct response:
         llm_output_list = judge_scores = adv_prompt_list = improv_list = None
         
         # Begin PAIR
-        for iteration in range(1, max_num_iterations + 1):
+        for iteration in tqdm(range(1, max_num_iterations + 1), desc="PAIR iterations", leave=False):
             logger.debug(f"""\n{'='*36}\nIteration: {iteration}\n{'='*36}\n""")
             if iteration > 1:
                 # Add previous attacking prompt and score to conversation history
