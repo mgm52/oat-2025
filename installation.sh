@@ -35,4 +35,4 @@ source .venv/bin/activate
 
 uv pip install -r requirements.txt
 
-# uv pip install --upgrade datasets
+uv pip install --upgrade datasets  # To avoid `NotImplementedError: Loading a dataset cached in a LocalFileSystem is not supported.`

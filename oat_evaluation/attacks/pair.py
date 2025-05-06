@@ -147,7 +147,7 @@ Example of a correct response:
         
         final_prompt = final_response = ""  # FYI: Strings are immutable
         final_score = 0
-        llm_output_list, judge_scores = None, None
+        llm_output_list = judge_scores = adv_prompt_list = improv_list = None
         
         # Begin PAIR
         for iteration in range(1, max_num_iterations + 1):
@@ -199,8 +199,7 @@ Example of a correct response:
                             new_indices_to_regenerate.append(orig_index)
 
             # Extract new attack prompt
-            adv_prompt_list = [attack["prompt"] if attack is not None and attack["prompt"] is not None else goal for attack in valid_outputs]
-            improv_list = [attack["improvement"] if attack is not None and attack["improvement"] is not None else "" for attack in valid_outputs]
+            adv_prompt_list, improv_list = self._get_new_adv_prompts_and_improvements(adv_prompt_list, improv_list, valid_outputs, goal)
             memory_after = print_mem_usage()
             print(f"Memory before: {memory_before} MB")
             print(f"Memory after: {memory_after} MB")
@@ -208,7 +207,7 @@ Example of a correct response:
             # Get responses from target LLM
             llm_output_list = target_llm.generate_responses(adv_prompt_list, max_new_tokens=self.max_new_victim_tokens).responses_strings
             # FLOPs for target model
-            flop_counter.num_flops += calculate_flops(model_size=target_llm.num_params, num_tokens=int(sum(len(llm_output for llm_output in llm_output_list))/3.4), include_backward=False)
+            flop_counter.num_flops += calculate_flops(model_size=target_llm.num_params, num_tokens=int(sum(len(llm_output) for llm_output in llm_output_list)/3.4), include_backward=False)
             logger.debug("Finished getting target responses.")
             
             # Get judge scores
@@ -217,7 +216,7 @@ Example of a correct response:
             scores_outputs = judge_llm.generate_responses(judge_prompts).responses_strings
             judge_scores = []
             # FLOPs for target model
-            flop_counter.num_flops += calculate_flops(model_size=judge_llm.num_params, num_tokens=int(sum(len(llm_output for llm_output in scores_outputs))/3.4), include_backward=False)
+            flop_counter.num_flops += calculate_flops(model_size=judge_llm.num_params, num_tokens=int(sum(len(llm_output) for llm_output in scores_outputs)/3.4), include_backward=False)
             for raw_output in scores_outputs:
                 pattern = r'\[\[(\d+)\]\]'
                 match = re.search(pattern, raw_output)
@@ -252,3 +251,30 @@ Example of a correct response:
         
         # wandb_logger.finish()
         return LLMResponses([final_response], None, None), AttackDetails(flop_counter.num_flops, [final_prompt], None, None)
+
+    def _get_new_adv_prompts_and_improvements(self, 
+                                              prev_adv_prompt_list: Optional[list[str]],
+                                              prev_improv_list: Optional[list[str]],
+                                              valid_outputs: list[str],
+                                              goal: str):
+        if prev_adv_prompt_list is None or prev_improv_list is None:
+            adv_prompt_list = [attack["prompt"] if attack is not None and attack["prompt"] is not None else goal for attack in valid_outputs]
+            improv_list = [attack["improvement"] if attack is not None and attack["improvement"] is not None else "" for attack in valid_outputs]
+            return adv_prompt_list, improv_list
+
+        assert len(prev_adv_prompt_list) == len(prev_improv_list) == len(valid_outputs)
+        
+        adversarial_prompts = []
+        improvements = []
+        # Fall back on previous round of adversarial prompts if current output is ill-formatted
+        for i, attack in enumerate(valid_outputs):
+            if attack is not None and attack["prompt"] is not None and attack["prompt"]:
+                adversarial_prompts.append(attack["prompt"])
+            else:
+                adversarial_prompts.append(prev_adv_prompt_list[i])
+            
+            if attack is not None and attack["improvement"] is not None and attack["improvement"]:
+                improvements.append(attack["improvement"])
+            else:
+                improvements.append(prev_improv_list[i])
+        return adversarial_prompts, improvements

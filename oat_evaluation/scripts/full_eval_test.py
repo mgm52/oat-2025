@@ -1,4 +1,5 @@
 from oat_evaluation.attacks.attack import AttackDetails
+from oat_evaluation.attacks.pair import PAIRAttack
 from oat_evaluation.utils import load_config_and_set_vars, print_timey
 load_config_and_set_vars() # needs to be at top to take effect
 
@@ -218,11 +219,12 @@ def main(target_layer_offset=0, target_token_start_offset=0, target_token_end_of
         harmless_responses = [e["completion"] for e in harmless]
 
         # Test subsets (first 400 examples)
-        harm_prompts_test, harm_responses_test = harm_prompts[:400], harm_responses[:400]
-        harmless_prompts_test, harmless_responses_test = harmless_prompts[:400], harmless_responses[:400]
+        NUM_TEST_EXAMPLES = 2
+        harm_prompts_test, harm_responses_test = harm_prompts[:NUM_TEST_EXAMPLES], harm_responses[:NUM_TEST_EXAMPLES]
+        harmless_prompts_test, harmless_responses_test = harmless_prompts[:NUM_TEST_EXAMPLES], harmless_responses[:NUM_TEST_EXAMPLES]
 
         # Train subsets (remaining 4600 examples)
-        harm_prompts_train, harm_responses_train = harm_prompts[400:], harm_responses[400:]
+        harm_prompts_train, harm_responses_train = harm_prompts[NUM_TEST_EXAMPLES:], harm_responses[NUM_TEST_EXAMPLES:]
 
         # Base model harmless -> FPR threshold
         print("\n=== BASE MODEL HARMLESS ===")
@@ -268,36 +270,53 @@ def main(target_layer_offset=0, target_token_start_offset=0, target_token_end_of
         print_timey(f"Highest-scoring harmful example: \n  PROMPT: {sorted_harmful_probe_scores[0][0][:100]}... (total len {len(sorted_harmful_probe_scores[0][0])})\n  RESPONSE: {sorted_harmful_probe_scores[0][1][:100]}... (total len {len(sorted_harmful_probe_scores[0][1])})\n  SCORE: {sorted_harmful_probe_scores[0][2]:.4f}")
         print_timey(f"Lowest-scoring harmful example: \n  PROMPT: {sorted_harmful_probe_scores[-1][0][:100]}... (total len {len(sorted_harmful_probe_scores[-1][0])})\n  RESPONSE: {sorted_harmful_probe_scores[-1][1][:100]}... (total len {len(sorted_harmful_probe_scores[-1][1])})\n  SCORE: {sorted_harmful_probe_scores[-1][2]:.4f}")
 
-    # Train attack on remaining harmful data
-    print("\n=== ATTACK TRAINING ===")
-    print_mem_usage()
-    llm._model.train()
-    attack = SoftSuffixAttack(suffix_len, 1, 4e-2, batch_size=4, chunk_size=4, max_steps=max_steps)
-    final_attacked_result, final_attack_details = attack.run_attack(
-        llm=llm,
-        prompts=harm_prompts_train,
-        harmful_responses=harm_responses_train,
-        probe_to_obfuscate=probe,
-        generate_final_responses=False,
-        callback_steps = [32, 64, 128, 256, 512],
-        callbacks = [lambda ad: evaluate_attack(ad, llm, do_non_attacked_eval, harm_prompts_test, probe, fpr_threshold)]
-    )
-    print_mem_usage()
+    # # Train attack on remaining harmful data
+    # print("\n=== ATTACK TRAINING ===")
+    # print_mem_usage()
+    # llm._model.train()
+    # attack = SoftSuffixAttack(suffix_len, 1, 4e-2, batch_size=4, chunk_size=4, max_steps=max_steps)
+    # final_attacked_result, final_attack_details = attack.run_attack(
+    #     llm=llm,
+    #     prompts=harm_prompts_train,
+    #     harmful_responses=harm_responses_train,
+    #     probe_to_obfuscate=probe,
+    #     generate_final_responses=False,
+    #     callback_steps = [32, 64, 128, 256, 512],
+    #     callbacks = [lambda ad: evaluate_attack(ad, llm, do_non_attacked_eval, harm_prompts_test, probe, fpr_threshold)]
+    # )
+    # print_mem_usage()
 
-    print_timey("Done with attack training! Now to run final evaluation...")
-    evaluate_attack(final_attack_details, llm, do_non_attacked_eval, harm_prompts_test, probe, fpr_threshold)
+    # print_timey("Done with attack training! Now to run final evaluation...")
+    # evaluate_attack(final_attack_details, llm, do_non_attacked_eval, harm_prompts_test, probe, fpr_threshold)
     #now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     #torch.save(attack.suffix, f"suffix_attack_suffix_{target_layer_offset}_{target_token_start_offset}_{target_token_end_offset}_{now}.pt")
+    
+    evaluate_attack(AttackDetails(0, None, None, None), llm, do_non_attacked_eval, harm_prompts_test, harm_responses_test, probe, fpr_threshold)
 
 
-def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked_eval: bool, harm_prompts_test: List[str], probe: AbhayCheckpointProbe, fpr_threshold: float):
+def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked_eval: bool, harm_prompts_test: List[str], harm_responses_test: list[str], probe: AbhayCheckpointProbe, fpr_threshold: float):
     with torch.no_grad():
         print_timey(f"About to run evaluation... Current attack FLOP cost: {attack_details.flop_cost}")
         print_mem_usage()
 
         # Generate embeddings for test prompts and apply attack
+        # test_embeddings = [llm.string_to_embedding(p) for p in harm_prompts_test]
+        # attacked_prompts = attack_details.generated_embedding_attack_function(test_embeddings)
         test_embeddings = [llm.string_to_embedding(p) for p in harm_prompts_test]
-        attacked_prompts = attack_details.generated_embedding_attack_function(test_embeddings)
+        pair_attack = PAIRAttack(n_concurrent_jailbreaks=2,
+                                max_num_iterations=1024,  # PAIR seems to work quite poorly against Gemma2 9B instruction-tuned. Might be good to try more iterations
+                                keep_last_n_in_convs=2,
+                                max_json_attempts=3,
+                                max_new_attack_tokens=256,
+                                max_new_victim_tokens=128,  # I recommend 256 or above, as otherwise, the victim model won't provide enough details
+                                attack_llm=llm,
+                                judge_llm=llm)
+        attacked_response, attack_details = pair_attack.run_attack(
+            llm=llm,
+            prompts=harm_prompts_test,
+            harmful_responses=harm_responses_test,
+            probe_to_obfuscate=None,
+        )
         torch.cuda.empty_cache(); gc.collect()
         print_mem_usage()
 
@@ -310,13 +329,15 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
             )
             print_mem_usage()
 
-        # Evaluate attacked responses
-        print_timey("\n=== EVALUATE ATTACKED ===")
-        print_mem_usage()
-        a_strings, a_scores = batch_generate_and_score(
-            llm, attacked_prompts, [], probe, batch_size=16, forced=False
-        )
-        print_mem_usage()
+        # # Evaluate attacked responses
+        # print_timey("\n=== EVALUATE ATTACKED ===")
+        # print_mem_usage()
+        # a_strings, a_scores = batch_generate_and_score(
+        #     llm, attack_details.generated_str_prompts, [], probe, batch_size=16, forced=False
+        # )
+        # print_mem_usage()
+        a_strings = attacked_response.responses_strings
+        a_scores = [-np.inf for _ in range(len(a_strings))]
 
         # StrongReject evaluation
         if do_non_attacked_eval:
@@ -380,7 +401,7 @@ def run_main():
     config = load_config_and_set_vars()
 
     # Initialize probe and model
-    OAT_OR_BASE = "llama_base"  # options: "abhayllama", "llama_base", "gemma_oat_mlp", "gemma_oat_linear", "gemma_base", "latllama"
+    OAT_OR_BASE = "gemma_oat_linear"
     MODEL_DEBUG_MODE = False
     MODEL_DTYPE = torch.bfloat16
     DO_NON_ATTACKED_EVAL = False
@@ -396,7 +417,7 @@ def run_main():
         llm = AutoPEFT(config["BASE_PATHS"]["gemma"], config["MODEL_PATHS"]["gemma_2_9b_oat_mlp"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
     elif OAT_OR_BASE == "gemma_oat_linear":
         probe = AbhayCheckpointProbe(checkpoint_path=config["PROBE_PATHS"]["gemma_2_9b_oat_linear"])
-        llm = AutoPEFT(config["BASE_PATHS"]["llama"], config["MODEL_PATHS"]["gemma_2_9b_oat_linear"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
+        llm = AutoPEFT(config["BASE_PATHS"]["gemma"], config["MODEL_PATHS"]["gemma_2_9b_oat_linear"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
     elif OAT_OR_BASE == "gemma_base":
         raise NotImplementedError("Gemma base model probe not trained yet")
         llm = AutoLLM(config["BASE_PATHS"]["gemma"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
@@ -410,7 +431,7 @@ def run_main():
     
     # Run evaluation for different layer offsets from -1 to 1
     #for max_steps in [32, 64, 128, 256, 512]:
-    for suffix_len in [1, 2, 4, 8, 16]:
+    for suffix_len in [1]:
         for token_start_offset in [0]: #[0, 2]:
             for token_end_offset in [0]: #[0, -1, -2, 1]:
                 for offset in [0]: #[0, 2, 1]: #[1, -1, 0, 2, -2]:  # -1, 0, 1

@@ -104,24 +104,25 @@ class AutoLLM(LLM):
         try:
             # Ensure model is fully on device before compiling if using device_map
             self._model.to(self.device) # May not be needed with device_map="auto"
-            print_timey("Attempting to compile model with torch.compile...")
+            # TODO: Reintroduce torch.compile(). Doesn't seem to work with full_eval_test.py as self._model.generation_config (below) will not work
+            # print_timey("Attempting to compile model with torch.compile...")
             # Note: Compilation might fail for some models or require specific PyTorch/CUDA versions.
-            if self.reduce_compile_overhead:
-                self._model = torch.compile(self._model, 
-                            mode="reduce-overhead", 
-                            dynamic=True, # dynamic=True might help with variable sequence lengths
-                )
-            else:
-                self._model = torch.compile(self._model, 
-                            dynamic=True, # dynamic=True might help with variable sequence lengths
-                            options={
-                                # "triton.cudagraphs": True,  # Enable CUDA graphs for static workloads. Could try enabling if we pad with static batch sizes and sequence lengths
-                                "dynamic_shapes": True,
-                                "epilogue_fusion": True,    # Fuse epilogue operations
-                                "max_autotune": True,        # Autotune kernel configurations
-                                "verbose_inductor": False,
-                            }
-                )
+            # if self.reduce_compile_overhead:
+            #     self._model = torch.compile(self._model, 
+            #                 mode="reduce-overhead", 
+            #                 dynamic=True, # dynamic=True might help with variable sequence lengths
+            #     )
+            # else:
+            #     self._model = torch.compile(self._model, 
+            #                 dynamic=True, # dynamic=True might help with variable sequence lengths
+            #                 options={
+            #                     # "triton.cudagraphs": True,  # Enable CUDA graphs for static workloads. Could try enabling if we pad with static batch sizes and sequence lengths
+            #                     "dynamic_shapes": True,
+            #                     "epilogue_fusion": True,    # Fuse epilogue operations
+            #                     "max_autotune": True,        # Autotune kernel configurations
+            #                     "verbose_inductor": False,
+            #                 }
+            #     )
 
 
             print_timey("Model compiled successfully.")

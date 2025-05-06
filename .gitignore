@@ -2,3 +2,4 @@
 repo.txt
 __pycache__
 *.egg-info
+config.yaml

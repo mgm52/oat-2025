@@ -14,7 +14,7 @@ from oat_evaluation.attacks.pair import PAIRAttack
 gemma_llm = AutoLLM("google/gemma-2-9b-it", dtype=torch.float32, debug_mode=False)
 # We're reusing the target/victim LLM as the attack and judge LLMs here, but they can be distinct
 pair_attack = PAIRAttack(n_concurrent_jailbreaks=2,
-                         max_num_iterations=1024,  # PAIR seems to work quite poorly against Gemma2 9B instruction-tuned. Might be good to try more iterations
+                         max_num_iterations=2,  # PAIR seems to work quite poorly against Gemma2 9B instruction-tuned. Might be good to try more iterations e.g. 1024
                          keep_last_n_in_convs=2,
                          max_json_attempts=3,
                          max_new_attack_tokens=256,
