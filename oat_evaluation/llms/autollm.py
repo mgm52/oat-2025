@@ -104,7 +104,7 @@ class AutoLLM(LLM):
         try:
             # Ensure model is fully on device before compiling if using device_map
             self._model.to(self.device) # May not be needed with device_map="auto"
-            # TODO: Reintroduce torch.compile
+            # TODO: Reintroduce torch.compile(). Doesn't seem to work with full_eval_test.py as torch.compile() returns a function, so self._model.generation_config (below) will not work
             # print_timey("Attempting to compile model with torch.compile...")
             # # Note: Compilation might fail for some models or require specific PyTorch/CUDA versions.
             # if self.reduce_compile_overhead:

@@ -89,10 +89,11 @@ class ApiLLM(LLM):
         prompts: Union[List[str], List[torch.Tensor], List[List[dict]]],
         exposed_activations_request: Optional[ExposedActivationsRequest] = None,
         max_new_tokens: int = 64,
-        requires_grad: bool = False,
         structured_output_type: Optional[Type[T]] = None,
-        temperature: float = 0.0
-    ) -> Union[LLMResponses, T]:
+        temperature: float = 0.0,
+        *args,
+        **kwargs,
+    ) -> LLMResponses:
         """
         Generate responses using the API.
         
@@ -108,7 +109,7 @@ class ApiLLM(LLM):
             temperature: Temperature for response generation
             
         Returns:
-            LLMResponses containing the generated responses, or a Pydantic model instance if structured_output_type is provided.
+            LLMResponses containing the generated responses. For structured output, the responses will be JSON strings.
             Note that logits and activations are not available through the API.
         """
         if isinstance(prompts[0], torch.Tensor):
@@ -129,7 +130,12 @@ class ApiLLM(LLM):
                     text_format=structured_output_type,
                     temperature=temperature
                 )
-                return response.output_parsed
+                # Convert structured output to JSON string
+                return LLMResponses(
+                    responses_strings=[response.output_parsed.model_dump_json()],
+                    responses_logits=None,
+                    activation_layers=None
+                )
             except AttributeError:
                 # Fallback for APIs that don't support the parse method but do support JSON response format
                 response = self.client.chat.completions.create(
@@ -140,7 +146,13 @@ class ApiLLM(LLM):
                     response_format={"type": "json_object"}
                 )
                 content = response.choices[0].message.content
-                return structured_output_type.model_validate_json(content)
+                # Validate and convert to JSON string
+                structured_output = structured_output_type.model_validate_json(content)
+                return LLMResponses(
+                    responses_strings=[structured_output.model_dump_json()],
+                    responses_logits=None,
+                    activation_layers=None
+                )
             
         # Standard text response
         responses = []
@@ -174,7 +186,8 @@ class ApiLLM(LLM):
         target_responses_or_embeddings: Union[List[str], List[torch.Tensor]],
         exposed_activations_request: Optional[ExposedActivationsRequest] = None,
         add_response_ending: bool = False,
-        requires_grad: bool = False
+        *args,
+        **kwargs,
     ) -> LLMResponses:
         """
         Generate forced responses using the API.
@@ -331,9 +344,12 @@ def main():
             max_new_tokens=200
         )
         
+        # Parse the JSON string back into a PairAttackerResponse object
+        attacker_data = PairAttackerResponse.model_validate_json(attacker_response.responses_strings[0])
+        
         print("\nStructured Output (PairAttackerResponse):")
-        print(f"Improvement: {attacker_response.improvement}")
-        print(f"New Prompt: {attacker_response.prompt}")
+        print(f"Improvement: {attacker_data.improvement}")
+        print(f"New Prompt: {attacker_data.prompt}")
 
 
 if __name__ == "__main__":

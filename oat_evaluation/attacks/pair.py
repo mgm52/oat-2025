@@ -8,7 +8,7 @@ from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.api_llm import PairAttackerResponse
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
-from oat_evaluation.utils import FlopCounter, print_mem_usage
+from oat_evaluation.utils import FlopCounter, print_mem_usage, print_timey
 from oat_training.src.utils import calculate_flops
 from .pair_utils.system_prompts import get_attacker_system_prompts, get_judge_system_prompt
 from .pair_utils.common import extract_json, get_init_msg, process_target_response  
@@ -115,7 +115,7 @@ class PAIRAttack(Attack):
         max_json_attempts = self.max_json_attempts
         flop_counter = FlopCounter()
         
-        memory_before = print_mem_usage()
+        memory_before = print_mem_usage(print_mem=False)
 
         if attack_llm is None or target_llm is None or judge_llm is None:
             raise LLMsNotSetException(f"Attack, Target and Judge LLMs must be set, got: {(attack_llm, target_llm, judge_llm)}")
@@ -141,9 +141,9 @@ Example of a correct response:
                  for sys_prompt in attacker_system_prompts 
                  for _ in range(max(1, batchsize // len(attacker_system_prompts)))]
         
-        final_prompt = final_response = ""  # FYI: Strings are immutable
+        final_prompt = final_response = ""  # FYI: Python strings are immutable
         final_score = 0
-        llm_output_list, judge_scores = None, None
+        llm_output_list = judge_scores = adv_prompt_list = improv_list = None
         
         # Begin PAIR
         for iteration in range(1, max_num_iterations + 1):
@@ -159,6 +159,7 @@ Example of a correct response:
             indices_to_regenerate = list(range(batchsize))
             valid_outputs = [None] * batchsize
             new_adv_prompts = [None] * batchsize
+            
             # In the PAIR paper, a prefix is added to force the model to general an improvement or prompt
             # It doesn't seem to work very well with Gemma 2, so I've removed that
             # assistant_prefix = '```json{"improvement": "","prompt": "' if iteration == 1 else '```json{"improvement": "'
@@ -190,12 +191,7 @@ Example of a correct response:
                                     max_new_tokens=self.max_new_attack_tokens,
                                     temperature=0.0
                                 )
-                                # Convert structured output to string representation for consistency
-                                json_str = json.dumps({
-                                    "improvement": response.improvement,
-                                    "prompt": response.prompt
-                                })
-                                attacker_outputs.append(json_str)
+                                attacker_outputs.append(response.responses_strings[0])
                             except Exception as e:
                                 # Fallback to regular text if structured output fails
                                 logger.warning(f"Structured output failed: {e}. Falling back to regular generation.")
@@ -230,10 +226,9 @@ Example of a correct response:
                         else:
                             new_indices_to_regenerate.append(orig_index)
 
-            # Extract new attack prompt
-            adv_prompt_list = [attack["prompt"] if attack is not None and attack["prompt"] is not None else goal for attack in valid_outputs]
-            improv_list = [attack["improvement"] if attack is not None and attack["improvement"] is not None else "" for attack in valid_outputs]
-            memory_after = print_mem_usage()
+            # Extract new adversarial prompts and improvements. Fall back on previous iteration if not found (e.g. invalid JSON)
+            adv_prompt_list, improv_list = self._get_new_adv_prompts_and_improvements(adv_prompt_list, improv_list, valid_outputs, goal)
+            memory_after = print_mem_usage(print_mem=False)
             print(f"Memory before: {memory_before} MB")
             print(f"Memory after: {memory_after} MB")
             
@@ -284,3 +279,30 @@ Example of a correct response:
         
         # wandb_logger.finish()
         return LLMResponses([final_response], None, None), AttackDetails(flop_counter.num_flops, [final_prompt], None, None)
+
+    def _get_new_adv_prompts_and_improvements(self, 
+                                              prev_adv_prompt_list: Optional[list[str]],
+                                              prev_improv_list: Optional[list[str]],
+                                              valid_outputs: list[str],
+                                              goal: str):
+        if prev_adv_prompt_list is None or prev_improv_list is None:
+            adv_prompt_list = [attack["prompt"] if attack is not None and attack["prompt"] is not None else goal for attack in valid_outputs]
+            improv_list = [attack["improvement"] if attack is not None and attack["improvement"] is not None else "" for attack in valid_outputs]
+            return adv_prompt_list, improv_list
+
+        assert len(prev_adv_prompt_list) == len(prev_improv_list) == len(valid_outputs)
+        
+        adversarial_prompts = []
+        improvements = []
+        # Fall back on previous round of adversarial prompts if current output is ill-formatted
+        for i, attack in enumerate(valid_outputs):
+            if attack is not None and attack["prompt"] is not None and attack["prompt"]:
+                adversarial_prompts.append(attack["prompt"])
+            else:
+                adversarial_prompts.append(prev_adv_prompt_list[i])
+            
+            if attack is not None and attack["improvement"] is not None and attack["improvement"]:
+                improvements.append(attack["improvement"])
+            else:
+                improvements.append(prev_improv_list[i])
+        return adversarial_prompts, improvements
