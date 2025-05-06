@@ -22,8 +22,8 @@ class AutoPEFT(AutoLLM):
         except Exception as e:
             print(f"Error loading adapter: {e}")
             # Extract subfolder from adapter_path: everything after the second '/'
-            subfolder = adapter_path.split('/')[2:].join('/')
-            shorter_adapter_path = adapter_path.split('/')[:2].join('/')
+            subfolder = '/'.join(adapter_path.split('/')[2:])
+            shorter_adapter_path = '/'.join(adapter_path.split('/')[:2])
             print(f"Attempt 2 - trying to load adapter with shorter path: {shorter_adapter_path}; subfolder: {subfolder}")
             self._model = PeftModel.from_pretrained(
                 self._model,                 # Pass the loaded base model object

@@ -18,7 +18,7 @@ numpy==1.26.4
 pyod
 https://github.com/ejnnr/cupbearer/archive/abhay_update.zip
 fire
-openai
+openai>=1.0.0
 jupyterlab
 ipykernel
 ipywidgets

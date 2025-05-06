@@ -3,8 +3,6 @@ import yaml
 import os
 from datetime import datetime
 import torch
-# from fvcore.nn import FlopCountAnalysis, ActivationCountAnalysis
-# from torch import nn
 
 
 def load_config_and_set_vars():
@@ -23,7 +21,6 @@ def load_config_and_set_vars():
     os.environ["HF_HOME"] = config["HF_HOME"]
     os.environ["HF_HUB_CACHE"] = f"{config['HF_HOME']}/hub"
     os.environ["HF_TOKEN"] = config["HF_TOKEN"]
-    
     return config
 
 def print_timey(message: str):
@@ -40,19 +37,4 @@ def print_mem_usage():
 @dataclass
 class FlopCounter:
     num_flops: int = 0
-    num_activations: int = 0
-
-
-# def get_total_flops(model: nn.Module, input: torch.Tensor, include_backward: bool = False) -> int:
-#     flops = FlopCountAnalysis(model, input).total()
-#     if include_backward:
-#         flops *= 3
-#     return flops
-
-
-# def get_total_activations(model: nn.Module, input: torch.Tensor, include_backward: bool = False) -> int:
-#     activations = ActivationCountAnalysis(model, input).total()
-#     if include_backward:
-#         activations *= 3
-#     return activations
-
+    # num_activations: int = 0
