@@ -396,7 +396,7 @@ def run_main():
         llm = AutoPEFT(config["BASE_PATHS"]["gemma"], config["MODEL_PATHS"]["gemma_2_9b_oat_mlp"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
     elif OAT_OR_BASE == "gemma_oat_linear":
         probe = AbhayCheckpointProbe(checkpoint_path=config["PROBE_PATHS"]["gemma_2_9b_oat_linear"])
-        llm = AutoPEFT(config["BASE_PATHS"]["llama"], config["MODEL_PATHS"]["gemma_2_9b_oat_linear"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
+        llm = AutoPEFT(config["BASE_PATHS"]["gemma"], config["MODEL_PATHS"]["gemma_2_9b_oat_linear"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
     elif OAT_OR_BASE == "gemma_base":
         raise NotImplementedError("Gemma base model probe not trained yet")
         llm = AutoLLM(config["BASE_PATHS"]["gemma"], dtype=torch.bfloat16, debug_mode=MODEL_DEBUG_MODE)
