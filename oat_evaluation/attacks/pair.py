@@ -13,7 +13,8 @@ from oat_evaluation.attacks import attack
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
-from oat_evaluation.utils import print_mem_usage
+from oat_evaluation.utils import FlopCounter, print_mem_usage
+from oat_training.src.utils import calculate_flops
 from .pair_utils.system_prompts import get_attacker_system_prompts, get_judge_system_prompt
 from .pair_utils.common import extract_json, get_init_msg, process_target_response  
 from .pair_utils.loggers import logger
@@ -103,7 +104,7 @@ class PAIRAttack(Attack):
                             print("Max retries reached. Skipping.")
                             # Handle failure (e.g., skip or raise)
                             final_llm_responses += LLMResponses([""], [], [])
-                            final_attack_details += AttackDetails(-1, prompt, None, None)
+                            final_attack_details += AttackDetails(0, prompt, None, None)
         return final_llm_responses, final_attack_details
 
     def _run_single_attack(self,
@@ -117,6 +118,7 @@ class PAIRAttack(Attack):
         max_num_iterations = self.max_num_iterations
         keep_last_n = self.keep_last_n_in_convs
         max_json_attempts = self.max_json_attempts
+        flop_counter = FlopCounter()
         
         memory_before = print_mem_usage()
 
@@ -184,6 +186,8 @@ Example of a correct response:
                     for i, full_output in enumerate(attacker_outputs):
                         orig_index = batch_indices[i]
                         full_output = assistant_prefix + full_output + "}" # Add end brace since we terminate generation on end braces
+                        # FLOPs for attacker model
+                        flop_counter.num_flops += calculate_flops(model_size=attack_llm.num_params, num_tokens=int(len(full_output)/3.4), include_backward=False)
                         # Update conversation
                         assert convs[orig_index][-1]["role"] == "assistant"
                         convs[orig_index][-1]["content"] = full_output
@@ -203,6 +207,8 @@ Example of a correct response:
             
             # Get responses from target LLM
             llm_output_list = target_llm.generate_responses(adv_prompt_list, max_new_tokens=self.max_new_victim_tokens).responses_strings
+            # FLOPs for target model
+            flop_counter.num_flops += calculate_flops(model_size=target_llm.num_params, num_tokens=int(sum(len(llm_output for llm_output in llm_output_list))/3.4), include_backward=False)
             logger.debug("Finished getting target responses.")
             
             # Get judge scores
@@ -210,6 +216,8 @@ Example of a correct response:
             judge_prompts = [sys_prompt + "\n" + f"[PROMPT]:{attack_prompt}\n[ASSISTANT'S RESPONSE]: {target_response}" for attack_prompt, target_response in zip(adv_prompt_list, llm_output_list)]
             scores_outputs = judge_llm.generate_responses(judge_prompts).responses_strings
             judge_scores = []
+            # FLOPs for target model
+            flop_counter.num_flops += calculate_flops(model_size=judge_llm.num_params, num_tokens=int(sum(len(llm_output for llm_output in scores_outputs))/3.4), include_backward=False)
             for raw_output in scores_outputs:
                 pattern = r'\[\[(\d+)\]\]'
                 match = re.search(pattern, raw_output)
@@ -243,4 +251,4 @@ Example of a correct response:
                 break
         
         # wandb_logger.finish()
-        return LLMResponses([final_response], None, None), AttackDetails(-1, [final_prompt], None, None)
+        return LLMResponses([final_response], None, None), AttackDetails(flop_counter.num_flops, [final_prompt], None, None)

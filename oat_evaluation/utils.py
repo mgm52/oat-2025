@@ -1,7 +1,10 @@
+from dataclasses import dataclass
 import yaml
 import os
 from datetime import datetime
 import torch
+# from fvcore.nn import FlopCountAnalysis, ActivationCountAnalysis
+# from torch import nn
 
 
 def load_config_and_set_vars():
@@ -32,3 +35,24 @@ def print_mem_usage():
     print(f"    [Memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB]")
     print(f"    [Memory reserved: {torch.cuda.memory_reserved() / 1024**2:.2f} MB]")
     return torch.cuda.memory_allocated() / 1024**2
+
+
+@dataclass
+class FlopCounter:
+    num_flops: int = 0
+    num_activations: int = 0
+
+
+# def get_total_flops(model: nn.Module, input: torch.Tensor, include_backward: bool = False) -> int:
+#     flops = FlopCountAnalysis(model, input).total()
+#     if include_backward:
+#         flops *= 3
+#     return flops
+
+
+# def get_total_activations(model: nn.Module, input: torch.Tensor, include_backward: bool = False) -> int:
+#     activations = ActivationCountAnalysis(model, input).total()
+#     if include_backward:
+#         activations *= 3
+#     return activations
+
