@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 
 from oat_evaluation.attacks import attack
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
+from oat_evaluation.llms.api_llm import PairAttackerResponse
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
 from oat_evaluation.utils import FlopCounter, print_mem_usage
