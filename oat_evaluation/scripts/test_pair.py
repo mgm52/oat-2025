@@ -17,7 +17,7 @@ llama_4_scout_llm = ApiLLM(model_name = "meta-llama/llama-4-scout-17b-16e-instru
                            base_url = "https://api.groq.com/openai/v1",
                            api_key_env_var="GROQ_API_KEY",
                            )
-llama_4_scout_llm._num_params = 17 * 1_000_000_000
+llama_4_scout_llm._num_params = 17 * 1_000_000_000  # Must be set for FLOP computation
 # We're reusing the target/victim LLM as the attack and judge LLMs here, but they can be distinct
 pair_attack = PAIRAttack(n_concurrent_jailbreaks=3,
                          max_num_iterations=1,  # PAIR seems to work quite poorly against Gemma2 9B instruction-tuned. Might be good to try more iterations. Original PAIR attack worked with <20 iterations

@@ -28,6 +28,7 @@ def print_timey(message: str):
     print(f"[{current_time}] {message}")
 
 
+# TODO: Rename this function, once I'm sure it's not used elsewhere (e.g. by Max)
 def print_mem_usage(print_mem: bool = True):
     if print_mem:
         print(f"    [Memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB]")
