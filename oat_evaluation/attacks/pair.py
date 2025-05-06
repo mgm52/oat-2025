@@ -16,6 +16,7 @@ from oat_evaluation.probes.probe import Probe
 from oat_evaluation.utils import print_mem_usage
 from .pair_utils.system_prompts import get_attacker_system_prompts, get_judge_system_prompt
 from .pair_utils.common import extract_json, get_init_msg, process_target_response  
+from .pair_utils.loggers import logger
 
 
 class LLMsNotSetException(Exception): ...
@@ -32,6 +33,7 @@ class PAIRAttack(Attack):
     max_json_attempts: int = 3  # The number of attempts for regenerating JSON outputs from the attacker model (initial attempts may be ill-formatted)
     max_new_attack_tokens: int = 512  # The number of tokens the attacker can use for thinking of improvements and proposing a new prompt
     max_new_victim_tokens: int = 256  # The number of tokens the victim/target can use for generating a response
+    max_cuda_oom_retries: int = 3
     attack_llm: Optional[LLM] = None
     judge_llm: Optional[LLM] = None
 
@@ -82,11 +84,26 @@ class PAIRAttack(Attack):
         final_attack_details = AttackDetails(None, None, None, None)
         with torch.inference_mode():
             for prompt, target in zip(prompts, harmful_responses):
-                llm_responses, attack_details = self._run_single_attack(attack_llm, target_llm, judge_llm, prompt, target)
-                # Merge outputs
-                final_llm_responses += llm_responses
-                final_attack_details += attack_details
-        
+                for attempt in range(self.max_cuda_oom_retries):
+                    try:
+                        llm_responses, attack_details = self._run_single_attack(attack_llm, target_llm, judge_llm, prompt, target)
+                        # Merge outputs
+                        final_llm_responses += llm_responses
+                        final_attack_details += attack_details
+                        break  # Success, exit retry loop
+                    except torch.cuda.OutOfMemoryError as e:
+                        print(f"Attempt {attempt + 1} failed: {e}")
+                        torch.cuda.empty_cache()
+                        if attempt < self.max_cuda_oom_retries - 1:
+                            # Adjust parameters, e.g., halve batch size
+                            print(f"Previously {self.n_concurrent_jailbreaks=}")
+                            self.n_concurrent_jailbreaks = self.n_concurrent_jailbreaks // 2
+                            print(f"Due to OOM, setting {self.n_concurrent_jailbreaks=}")
+                        else:
+                            print("Max retries reached. Skipping.")
+                            # Handle failure (e.g., skip or raise)
+                            final_llm_responses += LLMResponses([""], [], [])
+                            final_attack_details += AttackDetails(-1, prompt, None, None)
         return final_llm_responses, final_attack_details
 
     def _run_single_attack(self,
@@ -132,7 +149,7 @@ Example of a correct response:
         
         # Begin PAIR
         for iteration in range(1, max_num_iterations + 1):
-            # logger.debug(f"""\n{'='*36}\nIteration: {iteration}\n{'='*36}\n""")
+            logger.debug(f"""\n{'='*36}\nIteration: {iteration}\n{'='*36}\n""")
             if iteration > 1:
                 # Add previous attacking prompt and score to conversation history
                 processed_response_list = [process_target_response(llm_output, score, goal, target_str) for llm_output, score in zip(llm_output_list, judge_scores)]
@@ -178,15 +195,15 @@ Example of a correct response:
                             new_indices_to_regenerate.append(orig_index)
 
             # Extract new attack prompt
-            adv_prompt_list = [attack["prompt"] for attack in valid_outputs]
-            improv_list = [attack["improvement"] for attack in valid_outputs]
+            adv_prompt_list = [attack["prompt"] if attack is not None and attack["prompt"] is not None else goal for attack in valid_outputs]
+            improv_list = [attack["improvement"] if attack is not None and attack["improvement"] is not None else "" for attack in valid_outputs]
             memory_after = print_mem_usage()
             print(f"Memory before: {memory_before} MB")
             print(f"Memory after: {memory_after} MB")
             
             # Get responses from target LLM
             llm_output_list = target_llm.generate_responses(adv_prompt_list, max_new_tokens=self.max_new_victim_tokens).responses_strings
-            # logger.debug("Finished getting target responses.")
+            logger.debug("Finished getting target responses.")
             
             # Get judge scores
             sys_prompt = get_judge_system_prompt(goal, target_str)
@@ -198,11 +215,10 @@ Example of a correct response:
                 match = re.search(pattern, raw_output)
                 output = int(match.group(1)) if match else None
                 if output is None:
-                    print(f"Error in processing judge output: {raw_output}" )
-                    # logger.warning(f"Error in processing judge output: {raw_output}" )
+                    logger.warning(f"Error in processing judge output: {raw_output}" )
                     output = 1
                 judge_scores.append(output)
-            # logger.debug("Finished getting judge scores.")
+            logger.debug("Finished getting judge scores.")
             
             # Print prompts, responses, and scores
             for i,(prompt,improv,response, score) in enumerate(zip(adv_prompt_list,improv_list,llm_output_list, judge_scores)):
@@ -212,7 +228,6 @@ Example of a correct response:
                 if score > final_score:
                     final_prompt = prompt
                     final_response = response
-                # logger.debug()
 
             # WandB log values
             # wandb_logger.log(iteration, extracted_attack_list, llm_output_list, judge_scores)
@@ -224,7 +239,7 @@ Example of a correct response:
 
             # Early stopping if jailbreak has succeeded
             if any([score == 10 for score in judge_scores]):
-                # logger.info("Found a jailbreak. Exiting.")
+                logger.info("Found a jailbreak. Exiting.")
                 break
         
         # wandb_logger.finish()

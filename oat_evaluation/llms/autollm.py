@@ -3,6 +3,7 @@ import collections
 import contextlib
 from enum import Enum
 import time
+import logging
 from typing import Callable, List, Dict, Any, Optional, Tuple, Union
 
 from prompt_toolkit import prompt
@@ -28,10 +29,27 @@ def add_fwd_hooks(module_forward_pre_hooks: List[Tuple[torch.nn.Module, Callable
 
 class AutoLLM(LLM):
 
-    def __init__(self, model_path, dtype=torch.bfloat16, debug_mode=False):
+    def __init__(self, model_path, dtype=torch.bfloat16, debug_mode=False,
+                 reduce_compile_overhead=True):
         self.debug_mode = debug_mode
+        self.reduce_compile_overhead = reduce_compile_overhead
+        print(f"{self.debug_mode=}")
+        if self.debug_mode:
+            torch._logging.set_logs(dynamo=True,
+                                    aot=True,
+                                    graph=True,
+                                    inductor=True,
+                                    )
+        else:
+            torch._logging.set_logs(dynamo=False,
+                                    aot=False,
+                                    graph=False,
+                                    inductor=False,
+                                    )
+
         print_timey(f"Loading model from {model_path}...")
 
+        torch._dynamo.config.cache_size_limit = 64  # Increase cache size
         # --- Speed Improvement Suggestion ---
         # Try adding attn_implementation if supported by model and hardware
         # Requires: pip install flash-attn
@@ -88,7 +106,24 @@ class AutoLLM(LLM):
             self._model.to(self.device) # May not be needed with device_map="auto"
             print_timey("Attempting to compile model with torch.compile...")
             # Note: Compilation might fail for some models or require specific PyTorch/CUDA versions.
-            self._model = torch.compile(self._model, mode="reduce-overhead", dynamic=True) # dynamic=True might help with variable sequence lengths
+            if self.reduce_compile_overhead:
+                self._model = torch.compile(self._model, 
+                            mode="reduce-overhead", 
+                            dynamic=True, # dynamic=True might help with variable sequence lengths
+                )
+            else:
+                self._model = torch.compile(self._model, 
+                            dynamic=True, # dynamic=True might help with variable sequence lengths
+                            options={
+                                # "triton.cudagraphs": True,  # Enable CUDA graphs for static workloads. Could try enabling if we pad with static batch sizes and sequence lengths
+                                "dynamic_shapes": True,
+                                "epilogue_fusion": True,    # Fuse epilogue operations
+                                "max_autotune": True,        # Autotune kernel configurations
+                                "verbose_inductor": False,
+                            }
+                )
+
+
             print_timey("Model compiled successfully.")
         except Exception as e:
             print_timey(f"torch.compile failed: {e}. Proceeding without compilation.")
@@ -205,7 +240,11 @@ class AutoLLM(LLM):
                     print_timey(f"About to generate with tokenized_chat.input_ids.shape: {tokenized_chat['input_ids'].shape}")
                     print_timey(f"About to generate with tokenized_chat.attention_mask.shape: {tokenized_chat['attention_mask'].shape}")
                 
-                outputs = self._model.generate(**tokenized_chat, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
+                outputs = self._model.generate(**tokenized_chat, 
+                                               return_dict_in_generate=True,
+                                               max_new_tokens=max_new_tokens,
+                                               use_cache=True,
+                                               )
                 if self.debug_mode:
                     print_timey(f"Model generation complete. Decoding...")
                 start_length = tokenized_chat["input_ids"].shape[1]
@@ -219,6 +258,7 @@ class AutoLLM(LLM):
                     print_timey(f"Outputs.sequences: {outputs.sequences}")
                     print_timey(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
 
+                sequences = outputs.sequences
                 del outputs
 
                 # TODO: Update generate_responses_forced() to also handle full conversations
@@ -251,7 +291,12 @@ class AutoLLM(LLM):
                 gen_embeddings_tensor, attention_masks = self._left_pad_embeddings(gen_embeddings)
                 if self.debug_mode: print_timey(f"Turned into padded tensor of shape {gen_embeddings_tensor.shape}, with attention masks of shape {attention_masks.shape}... About to generate!")
 
-                outputs = self._model.generate(inputs_embeds=gen_embeddings_tensor, attention_mask=attention_masks, return_dict_in_generate=True, max_new_tokens=max_new_tokens)
+                outputs = self._model.generate(inputs_embeds=gen_embeddings_tensor,
+                                               attention_mask=attention_masks, 
+                                               return_dict_in_generate=True, 
+                                               max_new_tokens=max_new_tokens,
+                                               use_cache=True,
+                                               )
                 start_length = gen_embeddings_tensor.shape[1]
 
                 if self.debug_mode: print_timey(f"Generation complete. Outputs.sequences (len {len(sequences)}), shapes {[s.shape for s in sequences]}: {sequences}")

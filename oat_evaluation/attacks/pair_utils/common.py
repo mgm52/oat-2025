@@ -33,11 +33,13 @@ def extract_json(s):
         if not all(x in parsed for x in ["improvement","prompt"]):
             logger.error("Error in extracted structure. Missing keys.")
             logger.error(f"Extracted:\n {json_str}")
+            logger.error(f"Extracted from:\n {s}")
             return None, None
         return parsed, json_str
     except (SyntaxError, ValueError):
         logger.error("Error parsing extracted structure")
         logger.error(f"Extracted:\n {json_str}")
+        logger.error(f"Extracted from:\n {s}")
         return None, None
 
 def get_init_msg(goal, target):
