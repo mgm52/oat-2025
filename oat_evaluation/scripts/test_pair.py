@@ -17,7 +17,7 @@ from oat_evaluation.llms.autollm import AutoLLM
 from oat_evaluation.attacks.pair import PAIRAttack
 
 gemma_llm = AutoLLM(config["MODEL_PATHS"]["gemma"], dtype=torch.bfloat16, debug_mode=False)
-llama_4_scout_llm = ApiLLM(model_name = "gpt-4o", 
+llama_4_scout_llm = ApiLLM(model_name = "gpt-4.1", 
                            base_url = "https://api.openai.com/v1",
                            api_key_env_var="OPENAI_API_KEY",
                            )
@@ -65,6 +65,8 @@ attacks_to_try = [
                         max_new_victim_tokens=256,  # I recommend 256 or above, as otherwise, the victim model won't provide enough details
                         attack_llm=llama_4_scout_llm,
                         judge_llm=llama_4_scout_llm),
+    # In my tests using gpt-4o, this is the only one to elicit a non-refusal response against gemma 2 9b...
+    # But 4.1 does much better!
     PAIRAttack(n_concurrent_jailbreaks=1,
                         max_num_iterations=20,  # PAIR seems to work quite poorly against Gemma2 9B instruction-tuned. Might be good to try more iterations. Original PAIR attack worked with <20 iterations
                         keep_last_n_in_convs=4,
