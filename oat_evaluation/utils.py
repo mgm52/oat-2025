@@ -1,12 +1,15 @@
 from typing import List, Tuple, Union
 import numpy as np
 import torch
+from dataclasses import dataclass
 import yaml
 import os
 import wandb
 
 from datetime import datetime
 from datasets import DatasetDict, Dataset, IterableDatasetDict, IterableDataset
+import torch
+
 
 def load_config_and_set_vars():
     # Try a few relative paths
@@ -24,7 +27,6 @@ def load_config_and_set_vars():
     os.environ["HF_HOME"] = config["HF_HOME"]
     os.environ["HF_HUB_CACHE"] = f"{config['HF_HOME']}/hub"
     os.environ["HF_TOKEN"] = config["HF_TOKEN"]
-    
     return config
 
 def wandb_log(name, value, step=None):
@@ -57,3 +59,37 @@ def get_quantile_with_bootstrapping(data, quantile, n_bootstrap=1000, seed=42):
     bootstrap_samples = data[indices]
     bootstrap_quantiles = torch.quantile(bootstrap_samples, quantile, dim=1)
     return torch.mean(bootstrap_quantiles).item()
+
+
+# TODO: Rename this function, once I'm sure it's not used elsewhere (e.g. by Max)
+def print_mem_usage(print_mem: bool = True):
+    if print_mem:
+        print(f"    [Memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB]")
+        print(f"    [Memory reserved: {torch.cuda.memory_reserved() / 1024**2:.2f} MB]")
+    return torch.cuda.memory_allocated() / 1024**2
+
+@dataclass
+class FlopCounter:
+    num_flops: int = 0
+    # num_activations: int = 0
+
+def calculate_flops(model_size, num_tokens, include_backward=False):
+    """
+    Calculate approximate FLOPs for transformer operations.
+    
+    Args:
+        model_size: Number of parameters in the model
+        num_tokens: Number of tokens processed
+        include_backward: Whether to include backward pass (typically 2x forward)
+    
+    Returns:
+        Estimated number of FLOPs
+    """
+    # Basic estimate: k × d × 2, where k is tokens and d is model size
+    forward_flops = num_tokens * model_size * 2
+    
+    # Backward pass is approximately 2x the forward pass
+    if include_backward:
+        return forward_flops * 3
+    else:
+        return forward_flops

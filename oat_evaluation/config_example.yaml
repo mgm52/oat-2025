@@ -13,5 +13,5 @@ MODEL_PATHS:
   gemma: "google/gemma-2-9b-it"
   llama: "meta-llama/Meta-Llama-3-8B-Instruct" 
 HF_HOME: "/workspace/.cache/huggingface" # Defaults to "~/.cache/huggingface"... But /workspace/ is runpod's network volume
-HF_TOKEN: "hf_<INSERT_HERE>"
-OPENAI_API_KEY: "sk-proj-<INSERT-HERE>"
+# HF_TOKEN: "hf_<INSERT_HERE>"
+# OPENAI_API_KEY: "sk-proj-<INSERT-HERE>"

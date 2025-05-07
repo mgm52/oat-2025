@@ -44,7 +44,7 @@ class CustomPickleModule:
     Unpickler = RemapUnpickler
     @staticmethod
     def load(f, **kwargs):
-        encoding = kwargs.get('encoding', 'ASCII')
+        encoding = kwargs.get('encoding', 'ASCII')  # YL: Wouldn't utf-8 or latin1 be more conventional??
         try:
              return CustomPickleModule.Unpickler(f, encoding=encoding, errors=kwargs.get('errors', 'strict')).load()
         except TypeError:

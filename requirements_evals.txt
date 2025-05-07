@@ -1,0 +1,31 @@
+torch
+transformers
+huggingface_hub[cli]
+datasets
+git+https://github.com/TransformerLensOrg/TransformerLens
+circuitsvis
+peft
+simple_parsing
+natsort
+scikit-learn
+matplotlib
+plotly
+seaborn
+pandas
+wandb
+# flash-attn --no-build-isolation
+numpy==1.26.4
+pyod
+https://github.com/ejnnr/cupbearer/archive/abhay_update.zip
+fire
+openai>=1.0.0
+jupyterlab
+ipykernel
+ipywidgets
+# pytorch_memlab
+dataclasses-json
+python-dotenv
+git+https://github.com/dsbowen/strong_reject.git@main
+# git+https://github.com/JailbreakBench/jailbreakbench.git@main
+fastchat
+# fvcore  # For FLOP computation
