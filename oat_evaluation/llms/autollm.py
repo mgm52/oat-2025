@@ -11,8 +11,10 @@ import torch
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from oat_evaluation.llms.llm import LLM, ExposedActivationsRequest, LLMResponses, TokenSelectionMethod
-from oat_evaluation.utils import print_timey
+from oat_evaluation.utils import FlopCounter, print_timey
 from contextlib import contextmanager
+
+from oat_training.src.utils import calculate_flops
 
 @contextmanager
 def add_fwd_hooks(module_forward_pre_hooks: List[Tuple[torch.nn.Module, Callable]]):
@@ -225,14 +227,7 @@ class AutoLLM(LLM):
                         [{"role": "user", "content": prompt}]
                         for prompt in prompts
                     ]
-                tokenized_chat = self._tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=True,
-                    add_generation_prompt=True,
-                    padding=True,
-                    return_tensors="pt",
-                    return_dict=True
-                ).to(self._model.device)
+                tokenized_chat = self._tokenize_chat(messages, add_generation_prompt=True)
 
                 if self.debug_mode:
                     print_timey(f"About to generate with tokenized_chat: {tokenized_chat}")
@@ -256,6 +251,7 @@ class AutoLLM(LLM):
                 if self.debug_mode:
                     print_timey(f"Outputs.sequences: {outputs.sequences}")
                     print_timey(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
+                    print_timey(f"Total tokens used: {num_tokens} (input: {input_tokens}, output: {output_tokens})")
 
                 sequences = outputs.sequences
                 del outputs
@@ -390,14 +386,7 @@ class AutoLLM(LLM):
                 {"role": "assistant", "content": response}
             ]
         ]
-        chat_token_ids = self._tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=False,
-            padding=True,
-            return_tensors="pt",
-            return_dict=True
-        ).to("cuda")
+        chat_token_ids = self._tokenize_chat(messages, add_generation_prompt=False)
         chat_embeddings = self._model_embedding_layer(chat_token_ids["input_ids"])
 
         prompt_insertion_index = -1
@@ -569,14 +558,8 @@ class AutoLLM(LLM):
                     messages = prompts_or_embeddings
                     for conv, target_response in zip(prompts_or_embeddings, target_responses_or_embeddings):
                         conv.append({"role": "assistant", "content": target_response})
-                tokenized_chat = self._tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=True,
-                    add_generation_prompt=False,
-                    padding=True,
-                    return_tensors="pt",
-                    return_dict=True
-                ).to(self._model.device)
+                tokenized_chat = self._tokenize_chat(messages, add_generation_prompt=False)
+
                 if self.debug_mode:
                     print(f"Tokenized chat: {tokenized_chat}")
                     print(f"About to forward with tokenized_chat, with input_ids.shape: {tokenized_chat['input_ids'].shape}")
@@ -592,6 +575,7 @@ class AutoLLM(LLM):
                 if self.debug_mode:
                     print(f"Chat embeddings: {chat_embeddings}")
                 chat_embeddings_tensor, attention_masks = self._left_pad_embeddings(chat_embeddings)
+
                 if self.debug_mode:
                     print(f"Chat embeddings tensor: {chat_embeddings_tensor}")
                     print(f"Attention masks: {attention_masks}")
@@ -754,6 +738,24 @@ class AutoLLM(LLM):
             if isinstance(module, torch.nn.Module) and hasattr(module, 'self_attn'):
                 blocks.append(module)
         return blocks
+
+    def get_num_tokens_in_chat(self, messages: list[list[dict]]) -> int:
+        tokenized_chat = self._tokenize_chat(messages)
+        return tokenized_chat["input_ids"].numel()
+    
+    def get_num_tokens_in_str(self, string: str) -> int:
+        tokenized = self._tokenizer(string, return_tensors="pt")
+        return tokenized["input_ids"].numel()
+    
+    def _tokenize_chat(self, messages, **kwargs):
+        return self._tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=kwargs.get("tokenize", True),
+                    add_generation_prompt=kwargs.get("add_generation_prompt", False),
+                    padding=kwargs.get("padding", True),
+                    return_tensors=kwargs.get("return_tensors", "pt"),
+                    return_dict=kwargs.get("return_dict", True)
+                ).to(self._model.device)
 
     def _logits_to_strings(self, logits: torch.Tensor) -> List[str]:
         """Converts a logits tensor to a list of strings. Expects shape (batch_size, seq_len, vocab_size)."""

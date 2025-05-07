@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-import json
 import re
 import torch
 from typing import List, Any, Optional, Tuple, Callable
@@ -137,10 +136,9 @@ Example of a correct response:
 """
         attacker_system_prompts: list[str] = get_attacker_system_prompts(goal, target_str)
         batchsize = n_concurrent_jailbreaks
-        # assert batchsize % len(attacker_system_prompts) == 0
-        convs = [[{"role": "user", "content": sys_prompt + task_msg}] 
-                 for sys_prompt in attacker_system_prompts 
-                 for _ in range(max(1, batchsize // len(attacker_system_prompts)))]
+
+        convs = [[{"role": "user", "content": attacker_system_prompts[i % len(attacker_system_prompts)] + task_msg}] 
+                 for i in range(batchsize)]
         
         final_prompt = final_response = ""  # FYI: Python strings are immutable
         final_score = 0
@@ -190,7 +188,7 @@ Example of a correct response:
                                     prompts=[conv],
                                     structured_output_type=PairAttackerResponse,
                                     max_new_tokens=self.max_new_attack_tokens,
-                                    temperature=0.0
+                                    temperature=0.0,
                                 )
                                 attacker_outputs.append(response.responses_strings[0])
                             except Exception as e:
@@ -199,7 +197,7 @@ Example of a correct response:
                                 fallback_response = attack_llm.generate_responses(
                                     prompts=[conv], 
                                     max_new_tokens=self.max_new_attack_tokens,
-                                    requires_grad=False
+                                    requires_grad=False,
                                 ).responses_strings[0]
                                 attacker_outputs.append(fallback_response)
                     else:
@@ -207,19 +205,22 @@ Example of a correct response:
                         attacker_outputs = attack_llm.generate_responses(
                             prompts=convs_subset, 
                             max_new_tokens=self.max_new_attack_tokens, 
-                            requires_grad=False
+                            requires_grad=False,
                         ).responses_strings
                     
                     # Check for valid outputs and update the list
-                    for i, full_output in enumerate(attacker_outputs):
+                    for i, (conv, full_output) in enumerate(zip(convs_subset, attacker_outputs)):
                         orig_index = batch_indices[i]
-                        # FLOPs for attacker model
-                        flop_counter.num_flops += calculate_flops(model_size=attack_llm.num_params, num_tokens=int(len(full_output)/3.4), include_backward=False)
                         # Update conversation
                         if convs[orig_index][-1]["role"] == "assistant":
                             convs[orig_index][-1]["content"] = full_output
                         else:
                             convs[orig_index].append({"role": "assistant", "content": full_output})
+                        
+                        # FLOPs for attacker model, using target LLM to tokenize
+                        num_tokens = target_llm.get_num_tokens_in_chat(conv)
+                        flop_counter.num_flops += calculate_flops(attack_llm.num_params, num_tokens, include_backward=False)
+
                         attack_dict, json_str = extract_json(full_output)
                         if attack_dict is not None:
                             valid_outputs[orig_index] = attack_dict
@@ -236,7 +237,10 @@ Example of a correct response:
             # Get responses from target LLM
             llm_output_list = target_llm.generate_responses(adv_prompt_list, max_new_tokens=self.max_new_victim_tokens).responses_strings
             # FLOPs for target model
-            flop_counter.num_flops += calculate_flops(model_size=target_llm.num_params, num_tokens=int(sum(len(llm_output) for llm_output in llm_output_list)/3.4), include_backward=False)
+            # TODO: Consider if padding was used in generation
+            num_tokens = sum(target_llm.get_num_tokens_in_str(output) for output in llm_output_list)
+            num_tokens += sum(target_llm.get_num_tokens_in_str(prompt) for prompt in adv_prompt_list)
+            flop_counter.num_flops += calculate_flops(target_llm.num_params, num_tokens, include_backward=False)
             logger.debug("Finished getting target responses.")
             
             # Get judge scores
@@ -244,8 +248,11 @@ Example of a correct response:
             judge_prompts = [sys_prompt + "\n" + f"[PROMPT]:{attack_prompt}\n[ASSISTANT'S RESPONSE]: {target_response}" for attack_prompt, target_response in zip(adv_prompt_list, llm_output_list)]
             scores_outputs = judge_llm.generate_responses(judge_prompts).responses_strings
             judge_scores = []
-            # FLOPs for target model
-            flop_counter.num_flops += calculate_flops(model_size=judge_llm.num_params, num_tokens=int(sum(len(llm_output) for llm_output in scores_outputs)/3.4), include_backward=False)
+            # FLOPs for judge model, using target LLM to tokenize
+            # TODO: Consider if padding was used in generation
+            num_tokens = sum(target_llm.get_num_tokens_in_str(prompt) for prompt in judge_prompts)
+            num_tokens += sum(target_llm.get_num_tokens_in_str(output) for output in scores_outputs)
+            flop_counter.num_flops += calculate_flops(judge_llm.num_params, num_tokens, include_backward=False)
             for raw_output in scores_outputs:
                 pattern = r'\[\[(\d+)\]\]'
                 match = re.search(pattern, raw_output)
