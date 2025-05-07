@@ -39,6 +39,7 @@ class PAIRAttack(Attack):
         prompts: List[str],
         harmful_responses: List[str] = None,
         probe_to_obfuscate: Optional[Probe] = None,
+        probe_refusal_threshold: Optional[float] = None,
         generate_final_responses: bool = True,
         callback_steps: Optional[list[int]] = None,
         callbacks: Optional[list[Callable[[AttackDetails], Any]]] = None
@@ -58,7 +59,6 @@ class PAIRAttack(Attack):
         Returns:
             Tuple containing LLMResponses and AttackDetails.
         """
-        assert probe_to_obfuscate is None
         assert generate_final_responses
         assert callback_steps is None
         assert callbacks is None
@@ -82,7 +82,15 @@ class PAIRAttack(Attack):
         for prompt, target in tqdm(zip(prompts, harmful_responses), total=len(prompts), desc="Processing prompts"):
             for attempt in range(self.max_cuda_oom_retries):
                 try:
-                    llm_responses, attack_details = self._run_single_attack(attack_llm, target_llm, judge_llm, prompt, target)
+                    llm_responses, attack_details = self._run_single_attack(
+                        attack_llm, 
+                        target_llm, 
+                        judge_llm, 
+                        prompt, 
+                        target,
+                        probe_to_obfuscate,
+                        probe_refusal_threshold
+                    )
                     # Merge outputs
                     final_llm_responses += llm_responses
                     final_attack_details += attack_details
@@ -108,6 +116,8 @@ class PAIRAttack(Attack):
                            judge_llm: Optional[LLM],
                            goal: str,
                            target_str: str,
+                           probe_to_obfuscate: Optional[Probe] = None,
+                           probe_refusal_threshold: Optional[float] = None,
                            ):
         n_concurrent_jailbreaks = self.n_concurrent_jailbreaks
         max_num_iterations = self.max_num_iterations
@@ -242,6 +252,14 @@ Example of a correct response:
             num_tokens += sum(target_llm.get_num_tokens_in_str(prompt) for prompt in adv_prompt_list)
             flop_counter.num_flops += calculate_flops(target_llm.num_params, num_tokens, include_backward=False)
             logger.debug("Finished getting target responses.")
+            
+            # Apply probe obfuscation if needed
+            if probe_to_obfuscate is not None and probe_refusal_threshold is not None:
+                probe_scores = probe_to_obfuscate.get_scores(llm_output_list)
+                for i, score in enumerate(probe_scores):
+                    if score > probe_refusal_threshold:
+                        llm_output_list[i] = "I cannot answer that."
+                        logger.debug(f"Probe score {score} above threshold {probe_refusal_threshold}, replacing response with refusal.")
             
             # Get judge scores
             sys_prompt = get_judge_system_prompt(goal, target_str)

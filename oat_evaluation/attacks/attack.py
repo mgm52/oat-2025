@@ -41,6 +41,7 @@ class Attack(ABC):
         prompts: List[str],
         harmful_responses: List[str] = None,
         probe_to_obfuscate: Optional[Probe] = None,
+        probe_refusal_threshold: Optional[float] = None,
         generate_final_responses: bool = True,
         callback_steps: List[int] = None,
         callbacks: List[Callable[[AttackDetails], Any]] = None
