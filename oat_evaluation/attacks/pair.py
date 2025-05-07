@@ -9,7 +9,7 @@ from oat_evaluation.llms.api_llm import PairAttackerResponse
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
 from oat_evaluation.utils import FlopCounter, print_mem_usage, print_timey
-from oat_training.src.utils import calculate_flops
+from oat_evaluation.utils import calculate_flops
 from .pair_utils.system_prompts import get_attacker_system_prompts, get_judge_system_prompt
 from .pair_utils.common import extract_json, get_init_msg, process_target_response  
 from .pair_utils.loggers import logger
@@ -78,28 +78,28 @@ class PAIRAttack(Attack):
         
         final_llm_responses = LLMResponses([], [], [])
         final_attack_details = AttackDetails(None, None, None, None)
-        with torch.inference_mode():
-            for prompt, target in tqdm(zip(prompts, harmful_responses), total=len(prompts), desc="Processing prompts"):
-                for attempt in range(self.max_cuda_oom_retries):
-                    try:
-                        llm_responses, attack_details = self._run_single_attack(attack_llm, target_llm, judge_llm, prompt, target)
-                        # Merge outputs
-                        final_llm_responses += llm_responses
-                        final_attack_details += attack_details
-                        break  # Success, exit retry loop
-                    except torch.cuda.OutOfMemoryError as e:
-                        print(f"Attempt {attempt + 1} failed: {e}")
-                        torch.cuda.empty_cache()
-                        if attempt < self.max_cuda_oom_retries - 1:
-                            # Adjust parameters, e.g., halve batch size
-                            print(f"Previously {self.n_concurrent_jailbreaks=}")
-                            self.n_concurrent_jailbreaks = self.n_concurrent_jailbreaks // 2
-                            print(f"Due to OOM, setting {self.n_concurrent_jailbreaks=}")
-                        else:
-                            print("Max retries reached. Skipping.")
-                            # Handle failure (e.g., skip or raise)
-                            final_llm_responses += LLMResponses([""], [], [])
-                            final_attack_details += AttackDetails(0, prompt, None, None)
+        #with torch.inference_mode(): # disabling because otherwise we can't combine with non-inference tensors e.g. for probing
+        for prompt, target in tqdm(zip(prompts, harmful_responses), total=len(prompts), desc="Processing prompts"):
+            for attempt in range(self.max_cuda_oom_retries):
+                try:
+                    llm_responses, attack_details = self._run_single_attack(attack_llm, target_llm, judge_llm, prompt, target)
+                    # Merge outputs
+                    final_llm_responses += llm_responses
+                    final_attack_details += attack_details
+                    break  # Success, exit retry loop
+                except torch.cuda.OutOfMemoryError as e:
+                    print(f"Attempt {attempt + 1} failed: {e}")
+                    torch.cuda.empty_cache()
+                    if attempt < self.max_cuda_oom_retries - 1:
+                        # Adjust parameters, e.g., halve batch size
+                        print(f"Previously {self.n_concurrent_jailbreaks=}")
+                        self.n_concurrent_jailbreaks = self.n_concurrent_jailbreaks // 2
+                        print(f"Due to OOM, setting {self.n_concurrent_jailbreaks=}")
+                    else:
+                        print("Max retries reached. Skipping.")
+                        # Handle failure (e.g., skip or raise)
+                        final_llm_responses += LLMResponses([""], [], [])
+                        final_attack_details += AttackDetails(0, prompt, None, None)
         return final_llm_responses, final_attack_details
 
     def _run_single_attack(self,
@@ -314,3 +314,7 @@ Example of a correct response:
             else:
                 improvements.append(prev_improv_list[i])
         return adversarial_prompts, improvements
+
+    # String representation
+    def __str__(self):
+        return f"PAIRAttack(n_concurrent_jailbreaks={self.n_concurrent_jailbreaks}, max_num_iterations={self.max_num_iterations}, keep_last_n_in_convs={self.keep_last_n_in_convs}, max_json_attempts={self.max_json_attempts}, max_new_attack_tokens={self.max_new_attack_tokens}, max_new_victim_tokens={self.max_new_victim_tokens})"
