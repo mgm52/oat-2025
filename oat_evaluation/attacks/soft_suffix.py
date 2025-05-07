@@ -409,3 +409,7 @@ class SoftSuffixAttack(Attack):
         """Whether this attack can perform probe-obfuscation."""
         # Can include probe loss in the optimization objective
         return True
+
+    # String representation
+    def __str__(self) -> str:
+        return f"SoftSuffixAttack(suffix_length={self.suffix_length}, num_epochs={self.num_epochs}, learning_rate={self.learning_rate}, batch_size={self.batch_size}, epsilon={self.epsilon}, probe_loss_weight={self.probe_loss_weight}, debug_mode={self.debug_mode}, chunk_size={self.chunk_size}, max_steps={self.max_steps})"

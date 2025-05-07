@@ -1,5 +1,6 @@
 from datetime import datetime
-from oat_evaluation.utils import dataset_to_list, load_config_and_set_vars
+import gc
+from oat_evaluation.utils import dataset_to_list, load_config_and_set_vars, print_mem_usage, print_timey
 from oat_evaluation.evals.universal import batched_generate_and_score
 load_config_and_set_vars() # needs to be at top to take effect
 
@@ -132,8 +133,13 @@ def run_main():
                     print(traceback.format_exc())
                 finally:
                     wandb.finish()
+        print_timey("Finished all attacks for model. Deleting probe and model...")
+        print_mem_usage()
         del probe
         del llm
-
+        gc.collect()
+        print_mem_usage()
+        print_timey("Deleted probe and model.")
+        
 if __name__ == "__main__":
     run_main()

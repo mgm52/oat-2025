@@ -34,7 +34,9 @@ class AutoLLM(LLM):
             model_path, device_map="cuda", torch_dtype=dtype, trust_remote_code=True
         )
         print_timey("Model loaded. Loading tokenizer...")
-        self._tokenizer = AutoTokenizer.from_pretrained(model_path)
+        # Override LAT llama tokenizer (not sure why it breaks)
+        is_lat_llama = "lat-llama" in model_path or "robust_llama" in model_path
+        self._tokenizer = AutoTokenizer.from_pretrained(model_path if not is_lat_llama else "meta-llama/Meta-Llama-3-8B-Instruct")
         print_timey("Tokenizer loaded.")
 
         self.prepare_model()

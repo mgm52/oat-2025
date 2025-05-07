@@ -77,3 +77,7 @@ class Attack(ABC):
     def name(self) -> str:
         """The name of the attack"""
         return self.__class__.__name__
+
+    # String representation
+    def __str__(self) -> str:
+        return self.name

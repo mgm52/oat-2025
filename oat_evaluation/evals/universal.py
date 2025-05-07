@@ -228,6 +228,7 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
         if do_non_attacked_eval:
             metrics_to_log["eval/avg_sr_score_non_attacked"] = np.mean(na_sr_scores)
             metrics_to_log["eval/refusal_rate_non_attacked"] = na_refusal_rate
+            metrics_to_log["eval/jailbreak_rate_non_attacked"] = 1 - na_refusal_rate
             metrics_to_log["eval/ci_avg_sr_non_attacked_lower"] = na_sr_ci[0]
             metrics_to_log["eval/ci_avg_sr_non_attacked_upper"] = na_sr_ci[1]
             metrics_to_log["eval/ci_refusal_non_attacked_lower"] = na_refusal_ci[0]
@@ -235,6 +236,7 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
 
             metrics_to_log["eval/avg_sr_score_probe_non_attacked"] = np.mean(na_adjusted)
             metrics_to_log["eval/refusal_rate_probe_non_attacked"] = na_adjusted_refusal_rate
+            metrics_to_log["eval/jailbreak_rate_probe_non_attacked"] = 1 - na_adjusted_refusal_rate
             metrics_to_log["eval/ci_avg_sr_probe_non_attacked_lower"] = na_adjusted_ci[0]
             metrics_to_log["eval/ci_avg_sr_probe_non_attacked_upper"] = na_adjusted_ci[1]
             metrics_to_log["eval/ci_refusal_probe_non_attacked_lower"] = na_adjusted_refusal_ci[0]
@@ -242,6 +244,7 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
 
         metrics_to_log["eval/avg_sr_score_attacked"] = np.mean(a_sr_scores)
         metrics_to_log["eval/refusal_rate_attacked"] = a_refusal_rate
+        metrics_to_log["eval/jailbreak_rate_attacked"] = 1 - a_refusal_rate
         metrics_to_log["eval/ci_avg_sr_attacked_lower"] = a_sr_ci[0]
         metrics_to_log["eval/ci_avg_sr_attacked_upper"] = a_sr_ci[1]
         metrics_to_log["eval/ci_refusal_attacked_lower"] = a_refusal_ci[0]
@@ -249,6 +252,7 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
 
         metrics_to_log["eval/avg_sr_score_probe_attacked"] = np.mean(a_adjusted)
         metrics_to_log["eval/refusal_rate_probe_attacked"] = a_adjusted_refusal_rate
+        metrics_to_log["eval/jailbreak_rate_probe_attacked"] = 1 - a_adjusted_refusal_rate
         metrics_to_log["eval/ci_avg_sr_probe_attacked_lower"] = a_adjusted_ci[0]
         metrics_to_log["eval/ci_avg_sr_probe_attacked_upper"] = a_adjusted_ci[1]
         metrics_to_log["eval/ci_refusal_probe_attacked_lower"] = a_adjusted_refusal_ci[0]

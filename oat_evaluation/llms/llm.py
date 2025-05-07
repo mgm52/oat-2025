@@ -139,7 +139,7 @@ class LLM(ABC):
     def name(self) -> str:
         """The name of the model"""
         return self.__class__.__name__
-
+    
     # TODO: consider how to support attacks injected into activation space...
     # We'll need to be able to extract activations, give them to an arbitrary attack function, then continue generation....
     # I expect we can just add a sort of "hooks" feature into ActivationRequest ?!!????!!!!
