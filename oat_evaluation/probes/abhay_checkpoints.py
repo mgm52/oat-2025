@@ -12,6 +12,7 @@ import math # For isnan check
 from oat_evaluation.llms.autollm import AutoLLM
 from oat_evaluation.llms.llm import ExposedActivationsRequest, LLMResponses, TokenSelectionMethod
 from oat_evaluation.probes.probe import Probe
+from oat_evaluation.utils import print_timey
 from oat_training.src.probe_archs import LinearProbe, NonlinearProbe
 
 
@@ -164,6 +165,7 @@ class AbhayCheckpointProbe(Probe):
             List of final probe scores (one per response in the batch), averaged across layers and tokens.
             Returns NaNs if computation fails for a batch item.
         """
+        print_timey(f"Computing probe scores over {responses.batch_size} responses...")
         batch_size = responses.batch_size
         if batch_size == 0:
             return []
@@ -209,7 +211,6 @@ class AbhayCheckpointProbe(Probe):
         final_batch_scores = []
         for batch_idx in range(batch_size):
             item_activations_by_layer = responses.activation_layers[batch_idx] # List[Tensor(num_tokens, hidden)] for this item
-
             # --- Verification for this batch item ---
             if not item_activations_by_layer or len(item_activations_by_layer) == 0:
                 print(f"Warning: No activation layers found for batch item {batch_idx}.")
@@ -225,6 +226,8 @@ class AbhayCheckpointProbe(Probe):
             item_layer_scores = [] # Stores average scores for each layer for *this* batch item
             # Process layer by layer for the current batch item
             for layer_list_idx, target_layer_index in enumerate(self.target_layers):
+                 #print_timey(f"Probe at layer {layer_list_idx} of {len(self.target_layers)} preparing to run...")
+                 
                  probe_key = str(target_layer_index)
                  if probe_key not in self.probes:
                      print(f"Internal Error: No loaded probe found for target layer {target_layer_index} (key '{probe_key}') despite it being in target_layers. Skipping layer for item {batch_idx}.")
@@ -268,7 +271,9 @@ class AbhayCheckpointProbe(Probe):
 
 
                  # Apply the probe: forward(Tensor(num_tokens, hidden)) -> Tensor(num_tokens)
+                 #print_timey(f"Probe at layer {layer_list_idx} of {len(self.target_layers)} about to forward...")
                  probe_scores_per_token = torch.sigmoid(probe.forward(layer_activation_tensor.unsqueeze(0))).squeeze(0) # Shape: (num_tokens,)
+                 #print_timey(f"Probe at layer {layer_list_idx} of {len(self.target_layers)} forward complete!")
                  #print(f"Got post-sigmoid probe scores per token of shape: {probe_scores_per_token.shape}")
 
                  # Average scores across the token dimension for this layer and item
@@ -294,6 +299,8 @@ class AbhayCheckpointProbe(Probe):
 
             final_batch_scores.append(item_final_score)
 
+        #if debug_mode:
+        #   print_timey(f"Probe compute_scores complete!")
         return final_batch_scores
 
 

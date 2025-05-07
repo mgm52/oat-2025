@@ -1,6 +1,12 @@
+from typing import List, Tuple, Union
+import numpy as np
+import torch
 import yaml
 import os
+import wandb
+
 from datetime import datetime
+from datasets import DatasetDict, Dataset, IterableDatasetDict, IterableDataset
 
 def load_config_and_set_vars():
     # Try a few relative paths
@@ -21,6 +27,33 @@ def load_config_and_set_vars():
     
     return config
 
+def wandb_log(name, value, step=None):
+    if wandb.run:                       # safe if wandb disabled
+        wandb.log({name: value}, step=step)
+
 def print_timey(message: str):
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
     print(f"[{current_time}] {message}")
+    wandb_log("event", message)
+
+def print_mem_usage():
+    print(f"[Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB] ", end="")
+    print(f"[Reserved: {torch.cuda.memory_reserved() / 1024**2:.2f} MB]")
+
+def dataset_to_list(dataset: Union[DatasetDict, Dataset, IterableDatasetDict, IterableDataset]) -> List:
+    return [{"prompt": x["prompt"], "completion": x["completion"]} for x in dataset]
+
+def get_quantile_with_bootstrapping(data, quantile, n_bootstrap=1000, seed=42):
+    # Convert data to CPU tensor if it's a CUDA tensor
+    if isinstance(data, torch.Tensor) and data.device.type == 'cuda':
+        data = data.cpu()
+    
+    # Convert to tensor if it's not already
+    if not isinstance(data, torch.Tensor):
+        data = torch.tensor(data)
+    
+    torch.manual_seed(seed)
+    indices = torch.randint(0, len(data), (n_bootstrap, len(data)))
+    bootstrap_samples = data[indices]
+    bootstrap_quantiles = torch.quantile(bootstrap_samples, quantile, dim=1)
+    return torch.mean(bootstrap_quantiles).item()
