@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
-from oat_evaluation.utils import print_mem_usage, print_timey
+from oat_evaluation.utils import print_mem_usage, print_timey, calculate_forward_flops, calculate_backward_flops
 
 
 class SoftSuffixAttack(Attack):
@@ -209,11 +209,11 @@ class SoftSuffixAttack(Attack):
                     new_logits = new_responses.responses_logits
                     for resp in new_logits:
                         # Forward FLOP approximation of k*d*2 (where k=num tokens, d=num params) 
-                        flop_count += resp.shape[0] * llm.num_params * 2
+                        flop_count += calculate_forward_flops(llm.num_params, resp.shape[0])
                     for pr in prompt_chunk:
                         # Forward FLOP approximation of k*d*2 (where k=num tokens, d=num params) 
-                        flop_count += pr.shape[0] * llm.num_params * 2
-                        flop_count += suffix.shape[0] * llm.num_params * 2
+                        flop_count += calculate_forward_flops(llm.num_params, pr.shape[0])
+                        flop_count += calculate_forward_flops(llm.num_params, suffix.shape[0])
                     if probe_to_obfuscate is not None:
                         assert new_responses.activation_layers[0][0].requires_grad, "Activation layers should require grad"
 
@@ -296,11 +296,11 @@ class SoftSuffixAttack(Attack):
                     scaled_loss.backward() # Accumulate gradients on the combined, scaled loss
                     for resp in new_logits:
                         # Backward FLOP approximation of k*d*4 (where k=num tokens, d=num params)
-                        flop_count += resp.shape[0] * llm.num_params * 4
+                        flop_count += calculate_backward_flops(llm.num_params, resp.shape[0])
                     for pr in prompt_chunk:
                         # Forward FLOP approximation of k*d*2 (where k=num tokens, d=num params) 
-                        flop_count += pr.shape[0] * llm.num_params * 4
-                        flop_count += suffix.shape[0] * llm.num_params * 4
+                        flop_count += calculate_backward_flops(llm.num_params, pr.shape[0])
+                        flop_count += calculate_backward_flops(llm.num_params, suffix.shape[0])
 
                     if llm.debug_mode:
                         print_timey(f".backward() for chunk number {1 + (chunk_start_in_batch / self.chunk_size)} of {num_chunks_in_batch} complete.")

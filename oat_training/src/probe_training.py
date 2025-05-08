@@ -15,7 +15,7 @@ from tqdm.auto import tqdm
 import wandb
 
 from .attacks import train_attack
-from .utils import convert_seconds_to_time_str, get_valid_token_mask, calculate_flops, get_model_size
+from .utils import convert_seconds_to_time_str, get_valid_token_mask, calculate_forward_flops, calculate_backward_flops, get_model_size
 
 
 class Probe(nn.Module):
@@ -425,8 +425,6 @@ def train_online_probe(
     freeze_probes_during_adversarial_training=True,
     freeze_lora_during_warmup=False,
     use_lora_adapter=True,
-    run_softprompt_eval_every=128,
-    softprompt_evals_data={},
     checkpoint_dir=None,
     checkpoint_every=500,  # Save checkpoints every 500 steps by default
     **kwargs,
@@ -765,7 +763,7 @@ def train_online_probe(
 
                     # Track FLOPs for adversarial training
                     pgd_tokens = pos_batch_input_ids.shape[0] * pos_batch_input_ids.shape[1] * pgd_iterations
-                    pgd_flops = calculate_flops(model_size, pgd_tokens, include_backward=True)
+                    pgd_flops = calculate_backward_flops(model_size, pgd_tokens)
                     adversarial_training_flops += pgd_flops
                     total_flops += pgd_flops
                 else:
@@ -787,7 +785,7 @@ def train_online_probe(
                 }
                 
                 # Track forward pass FLOPs
-                forward_flops = calculate_flops(model_size, pos_tokens, include_backward=False)
+                forward_flops = calculate_forward_flops(model_size, pos_tokens)
                 total_flops += forward_flops
                 if current_step < start_adv_training_at_step or not adversarial_training:
                     probe_training_flops += forward_flops
@@ -811,7 +809,7 @@ def train_online_probe(
                     layer_losses[f"layer_{layer}_pos_loss"] = pos_layer_loss.item()
 
             # Track backward pass FLOPs for positive examples
-            backward_flops = calculate_flops(model_size, pos_tokens, include_backward=True) - forward_flops
+            backward_flops = calculate_backward_flops(model_size, pos_tokens)
             total_flops += backward_flops
             if current_step < start_adv_training_at_step or not adversarial_training:
                 probe_training_flops += backward_flops
@@ -836,7 +834,7 @@ def train_online_probe(
                 }
                 
                 # Track forward pass FLOPs for negative examples
-                forward_flops = calculate_flops(model_size, neg_tokens, include_backward=False)
+                forward_flops = calculate_forward_flops(model_size, neg_tokens)
                 total_flops += forward_flops
                 if current_step < start_adv_training_at_step or not adversarial_training:
                     probe_training_flops += forward_flops
@@ -862,7 +860,7 @@ def train_online_probe(
             neg_loss.backward(retain_graph=True)
 
             # Track backward pass FLOPs for negative examples
-            backward_flops = calculate_flops(model_size, neg_tokens, include_backward=True) - forward_flops
+            backward_flops = calculate_backward_flops(model_size, neg_tokens)
             total_flops += backward_flops
             if current_step < start_adv_training_at_step or not adversarial_training:
                 probe_training_flops += backward_flops
@@ -888,8 +886,8 @@ def train_online_probe(
                 reduction="batchmean",
             )
 
-            # Track FLOPs for KL divergence computation (approximation)
-            kl_flops = calculate_flops(model_size, neg_tokens, include_backward=True)
+            # Track FLOPs for KL divergence forwarding & backward
+            kl_flops = calculate_forward_flops(model_size, neg_tokens) + calculate_backward_flops(model_size, neg_tokens)
             total_flops += kl_flops
             if current_step < start_adv_training_at_step or not adversarial_training:
                 probe_training_flops += kl_flops

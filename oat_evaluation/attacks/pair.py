@@ -9,7 +9,7 @@ from oat_evaluation.llms.api_llm import PairAttackerResponse
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
 from oat_evaluation.utils import FlopCounter, print_mem_usage, print_timey
-from oat_evaluation.utils import calculate_flops
+from oat_evaluation.utils import calculate_forward_flops, calculate_backward_flops
 from .pair_utils.system_prompts import get_attacker_system_prompts, get_judge_system_prompt
 from .pair_utils.common import extract_json, get_init_msg, process_target_response  
 from .pair_utils.loggers import logger
@@ -229,7 +229,7 @@ Example of a correct response:
                         
                         # FLOPs for attacker model, using target LLM to tokenize
                         num_tokens = target_llm.get_num_tokens_in_chat(conv)
-                        flop_counter.num_flops += calculate_flops(attack_llm.num_params, num_tokens, include_backward=False)
+                        flop_counter.num_flops += calculate_forward_flops(attack_llm.num_params, num_tokens)
 
                         attack_dict, json_str = extract_json(full_output)
                         if attack_dict is not None:
@@ -250,7 +250,7 @@ Example of a correct response:
             # TODO: Consider if padding was used in generation
             num_tokens = sum(target_llm.get_num_tokens_in_str(output) for output in llm_output_list)
             num_tokens += sum(target_llm.get_num_tokens_in_str(prompt) for prompt in adv_prompt_list)
-            flop_counter.num_flops += calculate_flops(target_llm.num_params, num_tokens, include_backward=False)
+            flop_counter.num_flops += calculate_forward_flops(target_llm.num_params, num_tokens)
             logger.debug("Finished getting target responses.")
             
             # Apply probe obfuscation if needed
@@ -270,7 +270,7 @@ Example of a correct response:
             # TODO: Consider if padding was used in generation
             num_tokens = sum(target_llm.get_num_tokens_in_str(prompt) for prompt in judge_prompts)
             num_tokens += sum(target_llm.get_num_tokens_in_str(output) for output in scores_outputs)
-            flop_counter.num_flops += calculate_flops(judge_llm.num_params, num_tokens, include_backward=False)
+            flop_counter.num_flops += calculate_forward_flops(judge_llm.num_params, num_tokens)
             for raw_output in scores_outputs:
                 pattern = r'\[\[(\d+)\]\]'
                 match = re.search(pattern, raw_output)

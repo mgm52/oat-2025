@@ -73,23 +73,34 @@ class FlopCounter:
     num_flops: int = 0
     # num_activations: int = 0
 
-def calculate_flops(model_size, num_tokens, include_backward=False):
+def calculate_forward_flops(model_size, num_tokens):
     """
-    Calculate approximate FLOPs for transformer operations.
+    Calculate approximate FLOPs for transformer forward pass operations.
     
     Args:
         model_size: Number of parameters in the model
         num_tokens: Number of tokens processed
-        include_backward: Whether to include backward pass (typically 2x forward)
     
     Returns:
-        Estimated number of FLOPs
+        Estimated number of FLOPs for forward pass
     """
     # Basic estimate: k × d × 2, where k is tokens and d is model size
     forward_flops = num_tokens * model_size * 2
     
+    return forward_flops
+
+def calculate_backward_flops(model_size, num_tokens):
+    """
+    Calculate approximate FLOPs for transformer backward pass operations.
+    
+    Args:
+        model_size: Number of parameters in the model
+        num_tokens: Number of tokens processed
+    
+    Returns:
+        Estimated number of FLOPs for backward pass
+    """
     # Backward pass is approximately 2x the forward pass
-    if include_backward:
-        return forward_flops * 3
-    else:
-        return forward_flops
+    backward_flops = num_tokens * model_size * 2 * 2
+    
+    return backward_flops

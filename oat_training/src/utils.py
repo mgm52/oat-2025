@@ -13,26 +13,37 @@ loaded_models = {}
 loaded_tokenizers = {}
 
 
-def calculate_flops(model_size, num_tokens, include_backward=False):
+def calculate_forward_flops(model_size, num_tokens):
     """
-    Calculate approximate FLOPs for transformer operations.
+    Calculate approximate FLOPs for transformer forward pass operations.
     
     Args:
         model_size: Number of parameters in the model
         num_tokens: Number of tokens processed
-        include_backward: Whether to include backward pass (typically 2x forward)
     
     Returns:
-        Estimated number of FLOPs
+        Estimated number of FLOPs for forward pass
     """
     # Basic estimate: k × d × 2, where k is tokens and d is model size
     forward_flops = num_tokens * model_size * 2
     
+    return forward_flops
+
+def calculate_backward_flops(model_size, num_tokens):
+    """
+    Calculate approximate FLOPs for transformer backward pass operations.
+    
+    Args:
+        model_size: Number of parameters in the model
+        num_tokens: Number of tokens processed
+    
+    Returns:
+        Estimated number of FLOPs for backward pass
+    """
     # Backward pass is approximately 2x the forward pass
-    if include_backward:
-        return forward_flops * 3
-    else:
-        return forward_flops
+    backward_flops = num_tokens * model_size * 2 * 2
+    
+    return backward_flops
 
 def get_model_size(model):
     """
@@ -80,14 +91,16 @@ def load_hf_model(
     if model_name in loaded_models.keys():
         return loaded_models[model_name]
 
-    # Choose attention implemention if not specified
-    if attn_implementation is None:
+    # Removing attention choice for now to improve compatibility
 
-        # Make sure that models that dont support FlashAttention aren't forced to use it
-        if "gpt2" in model_name or "gemma" in model_name:
-            attn_implementation = "eager"
-        else:
-            attn_implementation = "flash_attention_2"
+    # Choose attention implemention if not specified
+    # if attn_implementation is None:
+
+    #     # Make sure that models that dont support FlashAttention aren't forced to use it
+    #     if "gpt2" in model_name or "gemma" in model_name:
+    #         attn_implementation = "eager"
+    #     else:
+    #         attn_implementation = "flash_attention_2"
 
     # Check if the model is peft, and load accordingly
     files = list_repo_files(model_name)
@@ -98,7 +111,7 @@ def load_hf_model(
                 model_name,
                 torch_dtype=torch_dtype,
                 low_cpu_mem_usage=True,
-                attn_implementation=attn_implementation,
+                #attn_implementation=attn_implementation,
                 device_map=device_map,
                 trust_remote_code=True,
             )
@@ -110,7 +123,7 @@ def load_hf_model(
             model_name,
             torch_dtype=torch_dtype,
             low_cpu_mem_usage=True,
-            attn_implementation=attn_implementation,
+            #attn_implementation=attn_implementation,
             device_map=device_map,
             trust_remote_code=True,
         ).eval()
