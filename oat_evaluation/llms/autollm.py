@@ -31,11 +31,8 @@ def add_fwd_hooks(module_forward_pre_hooks: List[Tuple[torch.nn.Module, Callable
 
 class AutoLLM(LLM):
 
-    def __init__(self, model_path, dtype=torch.bfloat16, debug_mode=False,
-                 reduce_compile_overhead=True):
+    def __init__(self, model_path, dtype=torch.bfloat16, debug_mode=False):
         self.debug_mode = debug_mode
-        self.reduce_compile_overhead = reduce_compile_overhead
-        print(f"{self.debug_mode=}")
         if self.debug_mode:
             torch._logging.set_logs(dynamo=True,
                                     aot=True,
@@ -51,7 +48,7 @@ class AutoLLM(LLM):
 
         print_timey(f"Loading model from {model_path}...")
 
-        torch._dynamo.config.cache_size_limit = 64  # Increase cache size
+        #torch._dynamo.config.cache_size_limit = 64  # Increase cache size
         # --- Speed Improvement Suggestion ---
         # Try adding attn_implementation if supported by model and hardware
         # Requires: pip install flash-attn
@@ -253,7 +250,7 @@ class AutoLLM(LLM):
                 if self.debug_mode:
                     print_timey(f"Outputs.sequences: {outputs.sequences}")
                     print_timey(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
-                    print_timey(f"Total tokens used: {num_tokens} (input: {input_tokens}, output: {output_tokens})")
+                    #print_timey(f"Total tokens used: {num_tokens} (input: {input_tokens}, output: {output_tokens})")
 
                 sequences = outputs.sequences
                 del outputs
@@ -296,6 +293,7 @@ class AutoLLM(LLM):
                                                )
                 start_length = gen_embeddings_tensor.shape[1]
 
+                sequences = outputs.sequences
                 if self.debug_mode: print_timey(f"Generation complete. Outputs.sequences (len {len(sequences)}), shapes {[s.shape for s in sequences]}: {sequences}")
 
                 decoded_responses = [
@@ -527,17 +525,14 @@ class AutoLLM(LLM):
                 # Make raw_activations_list the right size initially
                 raw_activations_list = [None] * len(target_layers)
 
-                # Modified hook to place tensor at the correct index AND detach
+                # Modified hook to place tensor at the correct index
                 def activation_extraction_hook_simple(destination: List[Optional[torch.Tensor]], index: int, debug_mode: bool = False):
                     def hook_fn(module, input):
                         # Ensure list is mutable if needed (though pre-sized should be ok)
                         if debug_mode:
                             print(f"Hook for layer index {index} triggered with input[0] shape: {input[0].shape}")
-                        # Store the *detached* single full activation tensor for this layer/
-                        pass
-                        # Detach here saves memory and usually doesn't break grad flow to inputs via logits.
-                        # If grads *through activations* are needed, this hook needs conditional detach.
-                        destination[index] = input[0].detach()
+                        # We shouldn't detach here, because we want to backprop through the activations
+                        destination[index] = input[0]
                     return hook_fn
 
                 fwd_extraction_hooks = [(
