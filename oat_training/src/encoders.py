@@ -680,6 +680,28 @@ class EleutherSparseAutoencoder(SparseAutoencoder):
         )
 
     @staticmethod
+    def load_custom_model_without_sae(
+        model_name, # e.g. "meta-llama/Meta-Llama-3-8B-Instruct"
+        device="cuda",
+        *args,
+        **kwargs,
+    ):
+        model, tokenizer = load_hf_model_and_tokenizer(
+            model_name, device_map=device
+        )
+
+        # Load SAE using Eleuther library
+        sae = None
+        return EleutherSparseAutoencoder(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=sae,
+            hook_name=f"model.layers.0",  # The SAE reads in the output of this block
+            *args,
+            **kwargs,
+        )
+
+    @staticmethod
     def load_pythia_sae(
         layer,
         model_size="160m",
@@ -765,6 +787,27 @@ class DeepmindSparseAutoencoder(SparseAutoencoder):
 
     def get_codebook(self, hook_name):
         return self.encoder.W_dec
+
+    @staticmethod
+    def load_custom_model_without_sae(
+        model_name, # e.g. "meta-llama/Meta-Llama-3-8B-Instruct"
+        device="cuda",
+        *args,
+        **kwargs,
+    ):
+        model, tokenizer = load_hf_model_and_tokenizer(
+            model_name, device_map=device
+        )
+
+        sae = None
+        return DeepmindSparseAutoencoder(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=sae,
+            hook_name=f"model.layers.0",  # The SAE reads in the output of this block
+            *args,
+            **kwargs,
+        )
 
     @staticmethod
     def load_npz_weights(weight_path, dtype, device):

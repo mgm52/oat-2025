@@ -10,8 +10,10 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
+from oat_evaluation.utils import calculate_backward_flops, calculate_forward_flops
+
 from .encoders import LanguageModelWrapper
-from .utils import get_last_true_indices, get_valid_token_mask, calculate_flops, get_model_size
+from .utils import get_last_true_indices, get_valid_token_mask, get_model_size
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, project_root)
@@ -579,7 +581,7 @@ def train_attack(
 
         # Track FLOPs for forward and backward pass
         batch_tokens = adv_tokens.shape[0] * adv_tokens.shape[1]
-        iteration_flops = calculate_flops(model_size, batch_tokens, include_backward=True)
+        iteration_flops = calculate_forward_flops(model_size, batch_tokens) + calculate_backward_flops(model_size, batch_tokens)
         total_attack_flops += iteration_flops
 
 

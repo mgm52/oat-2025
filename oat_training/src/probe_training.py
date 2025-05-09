@@ -396,14 +396,13 @@ def enable_model_gradients(lora_model):
                 param.requires_grad_(True)
 
 
-def train_online_probe(
+def train_oat_probe_and_model(
     encoder,
     positive_examples,
     negative_examples,
     create_probe_fn,
     layers,
     lora_params={},
-    adversarial_training=False,
     probe_lr=1e-3,
     adapter_lr=5e-5,
     kl_penalty=1e-2,
@@ -423,12 +422,13 @@ def train_online_probe(
     clip_grad_norm=1.0,
     start_adv_training_at_step=1024,
     freeze_probes_during_adversarial_training=True,
-    freeze_lora_during_warmup=False,
+    freeze_model_during_warmup=False,
     use_lora_adapter=True,
     checkpoint_dir=None,
     checkpoint_every=500,  # Save checkpoints every 500 steps by default
     **kwargs,
 ):
+    print(f"Checking that n_grad_accum is 0 or a multiple of n_steps... Actual values: n_grad_accum={n_grad_accum}, n_steps={n_steps}")
     assert n_grad_accum == 0 or n_steps % n_grad_accum == 0
 
     # Get model name from encoder
@@ -472,7 +472,6 @@ def train_online_probe(
             },
             # Training metadata
             "training": {
-                "adversarial": adversarial_training,
                 "batch_size": batch_size,
                 "grad_accumulation_steps": n_grad_accum,
                 "max_steps": n_steps,
@@ -491,7 +490,7 @@ def train_online_probe(
                 "start_step": start_adv_training_at_step,
                 "adversary_lr": adversary_lr,
                 "freeze_probes": freeze_probes_during_adversarial_training,
-                "freeze_lora_warmup": freeze_lora_during_warmup,
+                "freeze_lora_warmup": freeze_model_during_warmup,
             },
             # Masking configuration
             "masking": {
@@ -513,8 +512,8 @@ def train_online_probe(
         },
         tags=[
             model_name,
-            "adversarial" if adversarial_training else "standard",
-            "lora" if use_lora_adapter else "no-lora"
+            "lora" if use_lora_adapter else "no-lora",
+            "probe-only" if freeze_model_during_warmup and n_steps < start_adv_training_at_step else "probe-and-model"
         ]
     )
 
@@ -594,7 +593,6 @@ def train_online_probe(
 
     # This is only relevant for adversarial training
     if only_choose_prompt_tokens_between is not None:
-        assert adversarial_training
         pos_only_choose_mask = get_valid_token_mask(
             positive_input_ids, only_choose_prompt_tokens_between
         )
@@ -624,8 +622,31 @@ def train_online_probe(
             "total": 0,
             "probe_training": 0,
             "adversarial_training": 0,
+        },
+        "config": {
+            "probe_lr": probe_lr,
+            "adapter_lr": adapter_lr,
+            "kl_penalty": kl_penalty,
+            "max_length": max_length,
+            "n_steps": n_steps,
+            "batch_size": batch_size,
+            "n_grad_accum": n_grad_accum,
+            "device": device,
+            "epsilon": epsilon,
+            "adversary_lr": adversary_lr,
+            "pgd_iterations": pgd_iterations,
+            "clip_grad_norm": clip_grad_norm,
+            "start_adv_training_at_step": start_adv_training_at_step,
+            "freeze_probes_during_adversarial_training": freeze_probes_during_adversarial_training,
+            "freeze_model_during_warmup": freeze_model_during_warmup,
+            "use_lora_adapter": use_lora_adapter,
+            "checkpoint_dir": checkpoint_dir,
+            "checkpoint_every": checkpoint_every,
+            "layers": layers,
+            "model_parameters": model_size,
         }
     }
+    print(f"Initializing OAT training with info: {info}")
 
     wrappers = []
     adversaries = []
@@ -672,7 +693,7 @@ def train_online_probe(
 
             # Forward pass on positive examples
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                if adversarial_training and current_step >= start_adv_training_at_step:
+                if current_step >= start_adv_training_at_step:
                     # Print this out at the first adversarial training step
                     if current_step == start_adv_training_at_step:
                         print("FORMATTING EXAMPLES FOR ADVERSARIAL TRAINING")
@@ -787,7 +808,7 @@ def train_online_probe(
                 # Track forward pass FLOPs
                 forward_flops = calculate_forward_flops(model_size, pos_tokens)
                 total_flops += forward_flops
-                if current_step < start_adv_training_at_step or not adversarial_training:
+                if current_step < start_adv_training_at_step:
                     probe_training_flops += forward_flops
                 else:
                     adversarial_training_flops += forward_flops
@@ -811,7 +832,7 @@ def train_online_probe(
             # Track backward pass FLOPs for positive examples
             backward_flops = calculate_backward_flops(model_size, pos_tokens)
             total_flops += backward_flops
-            if current_step < start_adv_training_at_step or not adversarial_training:
+            if current_step < start_adv_training_at_step:
                 probe_training_flops += backward_flops
             else:
                 adversarial_training_flops += backward_flops
@@ -836,7 +857,7 @@ def train_online_probe(
                 # Track forward pass FLOPs for negative examples
                 forward_flops = calculate_forward_flops(model_size, neg_tokens)
                 total_flops += forward_flops
-                if current_step < start_adv_training_at_step or not adversarial_training:
+                if current_step < start_adv_training_at_step:
                     probe_training_flops += forward_flops
                 else:
                     adversarial_training_flops += forward_flops
@@ -862,48 +883,52 @@ def train_online_probe(
             # Track backward pass FLOPs for negative examples
             backward_flops = calculate_backward_flops(model_size, neg_tokens)
             total_flops += backward_flops
-            if current_step < start_adv_training_at_step or not adversarial_training:
+            if current_step < start_adv_training_at_step:
                 probe_training_flops += backward_flops
             else:
                 adversarial_training_flops += backward_flops
 
-            # Compute KL divergence of logits from base model logits
-            with torch.no_grad():
-                lora_model.disable_adapter_layers()
-                base_neg_output = lora_model(
-                    input_ids=neg_batch_input_ids,
-                    # attention_mask=neg_batch_attention_mask,
+            # Get model loss only if we're in a phase in which the model is being trained...
+            if not freeze_model_during_warmup or not (
+                    current_step < start_adv_training_at_step
+                ):
+                # Compute KL divergence of logits from base model logits
+                with torch.no_grad():
+                    lora_model.disable_adapter_layers()
+                    base_neg_output = lora_model(
+                        input_ids=neg_batch_input_ids,
+                        # attention_mask=neg_batch_attention_mask,
+                    )
+                    lora_model.enable_adapter_layers()
+
+                # Get logits only for masked positions
+                base_logits = base_neg_output.logits[neg_batch_zero_mask]
+                model_logits = neg_logits[neg_batch_zero_mask]
+
+                kl_loss = F.kl_div(
+                    F.log_softmax(base_logits, dim=-1),
+                    F.softmax(model_logits, dim=-1),
+                    reduction="batchmean",
                 )
-                lora_model.enable_adapter_layers()
 
-            # Get logits only for masked positions
-            base_logits = base_neg_output.logits[neg_batch_zero_mask]
-            model_logits = neg_logits[neg_batch_zero_mask]
+                # Track FLOPs for KL divergence forwarding & backward
+                kl_flops = calculate_forward_flops(model_size, neg_tokens) + calculate_backward_flops(model_size, neg_tokens)
+                total_flops += kl_flops
+                if current_step < start_adv_training_at_step:
+                    probe_training_flops += kl_flops
+                else:
+                    adversarial_training_flops += kl_flops
 
-            kl_loss = F.kl_div(
-                F.log_softmax(base_logits, dim=-1),
-                F.softmax(model_logits, dim=-1),
-                reduction="batchmean",
-            )
-
-            # Track FLOPs for KL divergence forwarding & backward
-            kl_flops = calculate_forward_flops(model_size, neg_tokens) + calculate_backward_flops(model_size, neg_tokens)
-            total_flops += kl_flops
-            if current_step < start_adv_training_at_step or not adversarial_training:
-                probe_training_flops += kl_flops
-            else:
-                adversarial_training_flops += kl_flops
-
-            # Backward pass on KL divergence
-            (kl_loss / (kl_loss.detach() + 1e-8) * kl_penalty).backward()
+                # Backward pass on KL divergence
+                (kl_loss / (kl_loss.detach() + 1e-8) * kl_penalty).backward()
+                accumulated_kl_loss += kl_loss.item()
 
             # Accumulate losses
             accumulated_probe_loss += pos_loss.item() + neg_loss.item()
-            accumulated_kl_loss += kl_loss.item()
             accumulated_toward_pgd_loss += (
-                pgd_toward_loss if adversarial_training else 0
+                pgd_toward_loss
             )
-            accumulated_probe_pgd_loss += pgd_probe_loss if adversarial_training else 0
+            accumulated_probe_pgd_loss += pgd_probe_loss
             steps_since_last_log += 1
 
             # Perform optimization step after accumulating gradients
@@ -925,15 +950,17 @@ def train_online_probe(
 
                 # Optimize probes only when not using adversarial training
                 if not freeze_probes_during_adversarial_training or not (
-                    adversarial_training and current_step > start_adv_training_at_step
+                    # In adversarial phase
+                    current_step > start_adv_training_at_step
                 ):
                     for optimizer in optimizers.values():
                         optimizer.step()
                         optimizer.zero_grad()
 
                 # Optimize the adapter
-                if not freeze_lora_during_warmup or not (
-                    adversarial_training and current_step < start_adv_training_at_step
+                if not freeze_model_during_warmup or not (
+                    # In warmup phase
+                    current_step < start_adv_training_at_step
                 ):
                     if adapter_optimizer is not None:
                         adapter_optimizer.step()
@@ -969,11 +996,10 @@ def train_online_probe(
                     "elapsed_time": time.time() - start_time
                 }
                 
-                if adversarial_training:
-                    current_info.update({
-                        "pgd_toward_loss": accumulated_toward_pgd_loss / max(steps_since_last_log, 1),
-                        "pgd_probe_loss": accumulated_probe_pgd_loss / max(steps_since_last_log, 1),
-                    })
+                current_info.update({
+                    "pgd_toward_loss": accumulated_toward_pgd_loss / max(steps_since_last_log, 1),
+                    "pgd_probe_loss": accumulated_probe_pgd_loss / max(steps_since_last_log, 1),
+                })
                 
                 with open(info_path, "w") as f:
                     json.dump(current_info, f)
@@ -991,13 +1017,9 @@ def train_online_probe(
                 avg_kl_loss = accumulated_kl_loss / steps_since_last_log
                 avg_toward_pgd_loss = (
                     accumulated_toward_pgd_loss / steps_since_last_log
-                    if adversarial_training
-                    else 0
                 )
                 avg_probe_pgd_loss = (
                     accumulated_probe_pgd_loss / steps_since_last_log
-                    if adversarial_training
-                    else 0
                 )
                 avg_total_loss = avg_probe_loss + avg_kl_loss
 
@@ -1015,11 +1037,10 @@ def train_online_probe(
                 for key, value in layer_losses.items():
                     metrics[f"train/{key}"] = value
 
-                if adversarial_training:
-                    metrics.update({
-                        "train/pgd_toward_loss": avg_toward_pgd_loss,
-                        "train/pgd_probe_loss": avg_probe_pgd_loss,
-                    })
+                metrics.update({
+                    "train/pgd_toward_loss": avg_toward_pgd_loss,
+                    "train/pgd_probe_loss": avg_probe_pgd_loss,
+                })
 
                 # Log FLOP metrics
                 metrics.update({
@@ -1049,9 +1070,8 @@ def train_online_probe(
                     f"Avg KL Loss: {avg_kl_loss:.4f}"
                 )
 
-                if adversarial_training:
-                    log_message += f", Avg Toward PGD Loss: {avg_toward_pgd_loss:.4f}"
-                    log_message += f", Avg Probe PGD Loss: {avg_probe_pgd_loss:.4f}"
+                log_message += f", Avg Toward PGD Loss: {avg_toward_pgd_loss:.4f}"
+                log_message += f", Avg Probe PGD Loss: {avg_probe_pgd_loss:.4f}"
 
                 print(log_message)
 
@@ -1080,11 +1100,10 @@ def train_online_probe(
         "adversarial_training_flops": adversarial_training_flops,
     })
 
-    if adversarial_training:
-        wandb.run.summary.update({
-            "final_pgd_toward_loss": avg_toward_pgd_loss,
-            "final_pgd_probe_loss": avg_probe_pgd_loss,
-        })
+    wandb.run.summary.update({
+        "final_pgd_toward_loss": avg_toward_pgd_loss,
+        "final_pgd_probe_loss": avg_probe_pgd_loss,
+    })
 
     # Close wandb run
     wandb.finish()
@@ -1093,6 +1112,8 @@ def train_online_probe(
 
 def save_probes(probes, save_path):
     # Save a list of probes to a file
+    # create the directory if it doesn't exist
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(probes, save_path)
 
 
