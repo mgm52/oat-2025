@@ -29,3 +29,4 @@ git+https://github.com/dsbowen/strong_reject.git@main
 # git+https://github.com/JailbreakBench/jailbreakbench.git@main
 fastchat
 # fvcore  # For FLOP computation
+nltk
