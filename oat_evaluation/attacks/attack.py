@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, List, Dict, Any, Optional, Tuple, Union
+from typing import Callable, List, Any, Optional, Tuple
 
 import torch
 from oat_evaluation.llms.llm import LLM, LLMResponses
@@ -21,6 +21,9 @@ class AttackDetails:
     generated_embedding_prompts: Optional[List[torch.Tensor]] = None
     generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None
     generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
+    num_input_tokens: Optional[int] = None
+    num_output_tokens: Optional[int] = None
+    num_cents_cost: Optional[int] = None
 
     def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
         if not isinstance(other, AttackDetails):
@@ -61,25 +64,31 @@ class Attack(ABC):
         Returns:
             Tuple containing LLMResponses and AttackDetails.
         """
-        pass
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def is_universal(self) -> bool:
         """Whether this attack is universal or per-prompt."""
-        pass
+        raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def is_cross_model_transferrable(self) -> bool:
+        """Whether this attack can transfer across models. (e.g. GCG)"""
+        raise NotImplementedError
+    
     @property
     @abstractmethod
     def box_requirement(self) -> BoxRequirement:
         """Whether this attack is white-box (activations) / black-box (tokens) / gray-box (logits)."""
-        pass
-
+        raise NotImplementedError
+    
     @property
     @abstractmethod
     def can_perform_obfuscation(self) -> bool:
         """Whether this attack can perform probe-obfuscation."""
-        pass
+        raise NotImplementedError
 
     @property
     def name(self) -> str:

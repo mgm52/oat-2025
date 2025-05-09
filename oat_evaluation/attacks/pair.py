@@ -20,6 +20,7 @@ class LLMsNotSetException(Exception): ...
 
 @dataclass
 class PAIRAttack(Attack):
+    is_cross_model_transferrable: bool = False  # Whether this attack can be transferred across models (e.g. GCG).
     is_universal: bool = False  # Whether this attack is universal or per-prompt.
     box_requirement: BoxRequirement = BoxRequirement.BLACK_BOX  # Whether this attack is white-box (activations) / black-box (tokens) / gray-box (logits).
     can_perform_obfuscation: bool = False  # Whether this attack can perform probe-obfuscation.
@@ -247,7 +248,7 @@ Example of a correct response:
             llm_output_list = target_llm.generate_responses(adv_prompt_list, max_new_tokens=self.max_new_victim_tokens).responses_strings
             # FLOPs for target model
             # TODO: Consider if padding was used in generation
-            # TODO: Consider batching this, although it isn't too expensive atm
+            # TODO: Consider batching this, although it isn't too expensive/slow atm
             num_tokens = sum(target_llm.get_num_tokens_in_str(output) for output in llm_output_list)
             num_tokens += sum(target_llm.get_num_tokens_in_str(prompt) for prompt in adv_prompt_list)
             flop_counter.num_flops += calculate_forward_flops(target_llm.num_params, num_tokens)
@@ -268,6 +269,7 @@ Example of a correct response:
             judge_scores = []
             # FLOPs for judge model, using target LLM to tokenize
             # TODO: Consider if padding was used in generation
+            # TODO: Consider batching this, although it isn't too expensive/slow atm
             num_tokens = sum(target_llm.get_num_tokens_in_str(prompt) for prompt in judge_prompts)
             num_tokens += sum(target_llm.get_num_tokens_in_str(output) for output in scores_outputs)
             flop_counter.num_flops += calculate_forward_flops(judge_llm.num_params, num_tokens)
