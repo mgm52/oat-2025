@@ -95,6 +95,7 @@ class FLRTAttack(Attack):
                 messages=prompt,
                 target=response,
                 config=attack_config,
+                activation_loss_fn=None,  # TODO: implement obfuscation loss
             )
             suffix = result.best_string
             prompt_with_suffix = prompt + suffix
@@ -122,7 +123,8 @@ class FLRTAttack(Attack):
 
     @property
     def can_perform_obfuscation(self) -> bool:
-        return True
+        # TODO: Implement obfuscation, should only need to pass in activation_loss_fn
+        return False
 
     @property
     def name(self) -> str:
