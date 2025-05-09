@@ -239,7 +239,7 @@ class AutoLLM(LLM):
                                                use_cache=True,
                                                )
                 if self.debug_mode:
-                    print_timey(f"Model generation complete. Decoding...")
+                    print_timey("Model generation complete. Decoding...")
                 start_length = tokenized_chat["input_ids"].shape[1]
 
                 decoded_responses = [
@@ -250,7 +250,6 @@ class AutoLLM(LLM):
                 if self.debug_mode:
                     print_timey(f"Outputs.sequences: {outputs.sequences}")
                     print_timey(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
-                    #print_timey(f"Total tokens used: {num_tokens} (input: {input_tokens}, output: {output_tokens})")
 
                 sequences = outputs.sequences
                 del outputs
@@ -259,7 +258,7 @@ class AutoLLM(LLM):
                 #   list[list[dict]]: list of conversations, e.g. [[{"role": "user", "content": ...}, ...]]
                 if isinstance(prompts[0], str):
                     if self.debug_mode:
-                        print_timey(f"Force-forwarding responses to get logits & activations...")
+                        print_timey("Force-forwarding responses to get logits & activations...")
                     forced_responses = self.generate_responses_forced(
                         prompts,
                         decoded_responses,
@@ -267,7 +266,7 @@ class AutoLLM(LLM):
                         requires_grad=requires_grad,
                     )
                     if self.debug_mode:
-                        print_timey(f"Force-forwarding complete. Returning LLMResponses!")
+                        print_timey("Force-forwarding complete. Returning LLMResponses!")
 
                     return LLMResponses(
                         responses_strings=decoded_responses,

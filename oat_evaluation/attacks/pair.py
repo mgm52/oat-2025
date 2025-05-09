@@ -8,8 +8,8 @@ from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.llms.api_llm import PairAttackerResponse
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
-from oat_evaluation.utils import FlopCounter, print_mem_usage, print_timey
-from oat_evaluation.utils import calculate_forward_flops, calculate_backward_flops
+from oat_evaluation.utils import FlopCounter, print_mem_usage
+from oat_evaluation.utils import calculate_forward_flops
 from .pair_utils.system_prompts import get_attacker_system_prompts, get_judge_system_prompt
 from .pair_utils.common import extract_json, get_init_msg, process_target_response  
 from .pair_utils.loggers import logger
@@ -78,7 +78,6 @@ class PAIRAttack(Attack):
         
         final_llm_responses = LLMResponses([], [], [])
         final_attack_details = AttackDetails(None, None, None, None)
-        #with torch.inference_mode(): # disabling because otherwise we can't combine with non-inference tensors e.g. for probing
         for prompt, target in tqdm(zip(prompts, harmful_responses), total=len(prompts), desc="Processing prompts"):
             for attempt in range(self.max_cuda_oom_retries):
                 try:
@@ -248,6 +247,7 @@ Example of a correct response:
             llm_output_list = target_llm.generate_responses(adv_prompt_list, max_new_tokens=self.max_new_victim_tokens).responses_strings
             # FLOPs for target model
             # TODO: Consider if padding was used in generation
+            # TODO: Consider batching this, although it isn't too expensive atm
             num_tokens = sum(target_llm.get_num_tokens_in_str(output) for output in llm_output_list)
             num_tokens += sum(target_llm.get_num_tokens_in_str(prompt) for prompt in adv_prompt_list)
             flop_counter.num_flops += calculate_forward_flops(target_llm.num_params, num_tokens)
