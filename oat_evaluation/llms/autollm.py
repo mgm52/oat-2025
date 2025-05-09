@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import collections
 import contextlib
 from enum import Enum
+import gc
 import time
 import logging
 from typing import Callable, List, Dict, Any, Optional, Tuple, Union
@@ -14,7 +15,6 @@ from oat_evaluation.llms.llm import LLM, ExposedActivationsRequest, LLMResponses
 from oat_evaluation.utils import FlopCounter, print_timey
 from contextlib import contextmanager
 
-from oat_training.src.utils import calculate_flops
 
 @contextmanager
 def add_fwd_hooks(module_forward_pre_hooks: List[Tuple[torch.nn.Module, Callable]]):
@@ -479,8 +479,8 @@ class AutoLLM(LLM):
                 
                 # Clear batch results to free memory
                 del batch_result
-                if not requires_grad:
-                    torch.cuda.empty_cache()
+                gc.collect()
+                torch.cuda.empty_cache()
                 
             return LLMResponses(
                 responses_strings=all_responses,

@@ -23,10 +23,13 @@ def load_config_and_set_vars():
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
     
-    os.environ["OPENAI_API_KEY"] = config["OPENAI_API_KEY"]
-    os.environ["HF_HOME"] = config["HF_HOME"]
-    os.environ["HF_HUB_CACHE"] = f"{config['HF_HOME']}/hub"
-    os.environ["HF_TOKEN"] = config["HF_TOKEN"]
+    for key in ["OPENAI_API_KEY", "HF_TOKEN", "STORAGE_HOME"]:
+        if key in config:
+            os.environ[key] = config[key]
+    
+    if "HF_HOME" in config:
+        os.environ["HF_HOME"] = config["HF_HOME"]
+        os.environ["HF_HUB_CACHE"] = f"{config['HF_HOME']}/hub"
     return config
 
 def wandb_log(name, value, step=None):
