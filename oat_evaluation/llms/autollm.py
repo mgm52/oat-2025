@@ -14,8 +14,6 @@ from oat_evaluation.llms.llm import LLM, ExposedActivationsRequest, LLMResponses
 from oat_evaluation.utils import FlopCounter, print_timey
 from contextlib import contextmanager
 
-from oat_training.src.utils import calculate_flops
-
 @contextmanager
 def add_fwd_hooks(module_forward_pre_hooks: List[Tuple[torch.nn.Module, Callable]]):
     handles = []
@@ -56,7 +54,7 @@ class AutoLLM(LLM):
         try:
              self._model = AutoModelForCausalLM.from_pretrained(
                  model_path,
-                 device_map="auto", # Use "auto" for better distribution if possible
+                 device_map="cuda:0", # Use single CUDA device instead of auto
                  torch_dtype=dtype,
                  trust_remote_code=True,
                  attn_implementation="flash_attention_2" # Use Flash Attention 2
@@ -65,12 +63,12 @@ class AutoLLM(LLM):
         except ImportError:
              print_timey("Flash Attention 2 not available or not installed. Falling back.")
              self._model = AutoModelForCausalLM.from_pretrained(
-                model_path, device_map="auto", torch_dtype=dtype, trust_remote_code=True
+                model_path, device_map="cuda:0", torch_dtype=dtype, trust_remote_code=True
             )
         except Exception as e: # Catch other potential errors like model incompatibility
              print_timey(f"Failed to load with Flash Attention 2 ({e}). Falling back.")
              self._model = AutoModelForCausalLM.from_pretrained(
-                model_path, device_map="auto", torch_dtype=dtype, trust_remote_code=True
+                model_path, device_map="cuda:0", torch_dtype=dtype, trust_remote_code=True
             )
 
         print_timey("Model loaded. Loading tokenizer...")
@@ -413,6 +411,64 @@ class AutoLLM(LLM):
         self._embeddings_to_chat_embeddings = lambda prompt, response: torch.cat((self._chat_intro, prompt, self._chat_middle, response, self._chat_outro), dim=1)
         self._embeddings_to_gen_embeddings = lambda prompt: torch.cat((self._chat_intro, prompt, self._chat_middle), dim=1)
         
+
+    def string_to_token_ids(self, input_string, add_response_ending=False):
+        """Output shape (seq_len)"""
+        if not isinstance(input_string, str):
+            print(f"CRITICAL_DEBUG: string_to_token_ids received non-string input! Type: {type(input_string)}, Value (first 100 chars): '{str(input_string)[:100]}'")
+        # print_timey(f"String to token ids: input string of length {len(input_string)}...") # Old log
+        if self.debug_mode: # More detailed logging
+            print_timey(f"string_to_token_ids: input_string (len {len(input_string)}): '{input_string[:200]}'")
+
+        tokenization_output = self._tokenizer(input_string, return_tensors="pt", add_special_tokens=False)
+        
+        if "input_ids" not in tokenization_output:
+            print(f"CRITICAL_ERROR: 'input_ids' not found in tokenizer output for string (len {len(input_string)}): '{input_string[:200]}'. Output keys: {tokenization_output.keys()}")
+            # Return an empty long tensor to prevent further errors, though this indicates a serious problem
+            return torch.tensor([], dtype=torch.long, device=self._model.device)
+
+        input_ids_tensor_from_tokenizer = tokenization_output["input_ids"]
+
+        # The tokenizer might return shape (1, seq_len) if input_string is a single string.
+        # We expect a 1D tensor of IDs here after [0].
+        if input_ids_tensor_from_tokenizer.ndim == 2 and input_ids_tensor_from_tokenizer.shape[0] == 1:
+            input_ids_1d = input_ids_tensor_from_tokenizer[0]
+        elif input_ids_tensor_from_tokenizer.ndim == 1:
+            input_ids_1d = input_ids_tensor_from_tokenizer
+        else:
+            print(f"CRITICAL_ERROR: Unexpected shape from tokenizer for 'input_ids': {input_ids_tensor_from_tokenizer.shape} for string (len {len(input_string)}): '{input_string[:200]}'")
+            return torch.tensor([], dtype=torch.long, device=self._model.device)
+
+
+        # === CRITICAL DTYPE CHECK ===
+        if input_ids_1d.dtype != torch.long:
+            print(f"CRITICAL_DEBUG: Tokenizer produced 'input_ids' with dtype {input_ids_1d.dtype} (expected torch.long)!")
+            print(f"CRITICAL_DEBUG: Problematic input_string (len {len(input_string)}): '{input_string[:200]}'")
+            print(f"CRITICAL_DEBUG: Problematic input_ids values (first 10): {input_ids_1d.flatten()[:10]}")
+            # This is a workaround to allow execution to continue, but the root cause needs to be found.
+            # It's possible the float values are not meaningful as token IDs.
+            print(f"CRITICAL_DEBUG: Forcing cast of problematic input_ids to torch.long.")
+            input_ids_1d = input_ids_1d.long() 
+        
+        input_tokens = input_ids_1d.to(self._model.device)
+
+        if add_response_ending:
+            if self.debug_mode:
+                print_timey(f"Adding response ending of length {self._chat_outro_token_ids.shape[0]} (specifically: {self._chat_outro_token_ids}) to input tokens of length {input_tokens.shape[0]}...")
+            # Ensure _chat_outro_token_ids is also long, though it should be by construction
+            if self._chat_outro_token_ids.dtype != torch.long:
+                 print(f"CRITICAL_DEBUG: _chat_outro_token_ids has dtype {self._chat_outro_token_ids.dtype}! Forcing long.")
+                 self._chat_outro_token_ids = self._chat_outro_token_ids.long().to(self._model.device) # also ensure on correct device
+            
+            # Ensure input_tokens is on the same device as _chat_outro_token_ids before cat
+            # (already handled by .to(self._model.device) above if _chat_outro_token_ids is also on _model.device)
+            return torch.cat((input_tokens, self._chat_outro_token_ids.to(input_tokens.device)), dim=0)
+        else:
+            if self.debug_mode:
+                print_timey(f"string_to_token_ids: returning tokens of length {input_tokens.shape[0]}...")
+            return input_tokens
+
+
     def string_to_token_ids(self, input_string, add_response_ending=False):
         """Output shape (seq_len)"""
         #print_timey(f"String to token ids: input string of length {len(input_string)}...")
@@ -428,7 +484,17 @@ class AutoLLM(LLM):
 
     def _token_ids_to_embeddings(self, token_ids: torch.Tensor) -> torch.Tensor:
         """Expects input shape (batch_size, seq_len). Outputs shape (batch_size, seq_len, embedding_size)."""
+        # Ensure token_ids are of integer type (long or int) as expected by nn.Embedding
+        if not (token_ids.dtype == torch.long or token_ids.dtype == torch.int):
+            # This warning can be helpful for debugging if this case is hit unexpectedly.
+            # print_timey(f"Warning: _token_ids_to_embeddings received token_ids with dtype {token_ids.dtype}. Casting to long.")
+            try:
+                token_ids = token_ids.long()
+            except RuntimeError as e:
+                print_timey(f"ERROR: Failed to cast token_ids to long. Original dtype: {token_ids.dtype}, contents: {token_ids}. Error: {e}")
+                raise
         return self._model_embedding_layer(token_ids)
+
 
     def generate_responses_forced(
         self,
