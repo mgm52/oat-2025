@@ -1,11 +1,17 @@
-from datetime import datetime
-import gc
+import hashlib
+import random
 from oat_evaluation.utils import dataset_to_list, load_config_and_set_vars, print_mem_usage, print_timey
-from oat_evaluation.evals.universal import batched_generate_and_score
 load_config_and_set_vars() # needs to be at top to take effect
+
+from datetime import datetime
+import time as time_lib
+import gc
+from oat_evaluation.attacks.perturbation import PerturbationAttack
+from oat_evaluation.evals.universal import batched_generate_and_score
 
 import traceback
 import torch
+import argparse
 
 from oat_evaluation.attacks.soft_suffix import SoftSuffixAttack
 from oat_evaluation.data.standard_data import load_harmful_harmful_test_abhay_1000, load_harmless_blend_test_abhay_1533
@@ -21,22 +27,33 @@ def run_main():
     """
     Initialize models, load datasets once, and run evaluations with different offsets.
     """
-    # Load config for model and probe paths
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Run full evaluation test with specified probe names')
+    parser.add_argument('--probe_names', type=str, default="llama_3_8b_cb_linear_1",
+                      help='Comma-separated list of probe names to evaluate (default: "llama_3_8b_cb_linear_1")')
+    args = parser.parse_args()
+
+    MINI_MODE = False
+    print(f"MINI_MODE: {MINI_MODE}")
 
     print(f"Loading datasets once for all evaluations...")
     harmful = load_harmful_harmful_test_abhay_1000()
     harmful = dataset_to_list(harmful)
 
-    # Override to load 15% xstest-blended set!
     harmless = load_harmless_blend_test_abhay_1533()
     harmless = dataset_to_list(harmless)
+    harmless = harmless[:8] if MINI_MODE else harmless
 
     print(f"Loaded {len(harmless)} harmless examples. First one: {harmless[0]}")
 
+    num_steps_soft_attack_standard = 150 if not MINI_MODE else 8
     attacks_to_evaluate = [
-        SoftSuffixAttack(suffix_length=1, num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=150),
-        SoftSuffixAttack(suffix_length=4, num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=150),
-        SoftSuffixAttack(suffix_length=16, num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=150),
+        lambda: PerturbationAttack(num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
+        lambda: PerturbationAttack(num_epochs=1, learning_rate=2e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
+        lambda: PerturbationAttack(num_epochs=1, learning_rate=8e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
+        lambda: SoftSuffixAttack(suffix_length=1, num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
+        lambda: SoftSuffixAttack(suffix_length=4, num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
+        lambda: SoftSuffixAttack(suffix_length=16, num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
     ]
     
     MODEL_DEBUG_MODE = False
@@ -53,27 +70,27 @@ def run_main():
     WANDB_PROJECT = "oat_evaluation" 
     WANDB_ENTITY = None # wandb username or team, or None for default
 
-    for OAT_OR_BASE in ["abhayllama", "llama_base", "latllama"]: #["abhayllama", "llama_base", "gemma_oat_mlp", "gemma_oat_linear", "gemma_base", "latllama"]:
+    callback_steps=list(range(0, 75, 5)) + list(range(75, 150, 10))
+    seeds = range(5) if not MINI_MODE else range(1)
+    num_harmful_test_samples = 100 if not MINI_MODE else 8
+
+    time_at_start_of_process = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    print(f"Probes to choose from: {probes.keys()}")
+    print(f"Models to choose from: {llms.keys()}")
+
+    probe_names_to_evaluate = [name.strip() for name in args.probe_names.split(',')]
+
+    for pn in probe_names_to_evaluate:
         try:
-            if OAT_OR_BASE == "abhayllama":
-                probe = AbhayCheckpointProbe(checkpoint_path= probes["llama_3_8b_oat_linear"])
-                llm = AutoPEFT(llms["llama"], llms["llama_3_8b_oat_linear"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
-            elif OAT_OR_BASE == "llama_base":
-                probe = AbhayCheckpointProbe(checkpoint_path=probes["llama_3_8b_linear"])
-                llm = AutoLLM(llms["llama"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
-            elif OAT_OR_BASE == "gemma_oat_mlp":
-                probe = AbhayCheckpointProbe(checkpoint_path=probes["gemma_2_9b_oat_mlp"])
-                llm = AutoPEFT(llms["gemma"], llms["gemma_2_9b_oat_mlp"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
-            elif OAT_OR_BASE == "gemma_oat_linear":
-                probe = AbhayCheckpointProbe(checkpoint_path=probes["gemma_2_9b_oat_linear"])
-                llm = AutoPEFT(llms["gemma"], llms["gemma_2_9b_oat_linear"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
-            elif OAT_OR_BASE == "gemma_base":
-                #raise NotImplementedError("Gemma base model probe not trained yet")
-                probe = AbhayCheckpointProbe(checkpoint_path=probes["gemma_2_9b_oat_linear"])
-                llm = AutoLLM(llms["gemma"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
-            elif OAT_OR_BASE == "latllama":
-                probe = AbhayCheckpointProbe(checkpoint_path=probes["llama_3_8b_lat_linear"])
-                llm = AutoLLM(llms["llama"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
+            probe_details = probes[pn]
+            model_details = llms[probe_details["model_name"]]
+
+            probe = AbhayCheckpointProbe(checkpoint_path=probe_details["path"])
+            if model_details["peft"]:
+                llm = AutoPEFT(llms[model_details["base_model_name"]]["path"], model_details["path"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
+            else:
+                llm = AutoLLM(model_details["path"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
         except Exception as e:
             print(f"Error loading model {OAT_OR_BASE}: {e}")
             print(traceback.format_exc())
@@ -81,30 +98,36 @@ def run_main():
         
         llm.set_offsets(target_layer_offset=0, target_token_start_offset=0, target_token_end_offset=0)
 
-        _, harmless_probe_scores = batched_generate_and_score(
-            llm, [s["prompt"] for s in harmless], [s["completion"] for s in harmless], probe, forced=True
-        )
+        with torch.no_grad():
+            _, harmless_probe_scores = batched_generate_and_score(
+                llm, [s["prompt"] for s in harmless], [s["completion"] for s in harmless], probe, forced=True
+            )
         harmless_probe_scores = [x.item() for x in harmless_probe_scores]
 
         # Run evaluation for different layer offsets from -1 to 1
         #for max_steps in [32, 64, 128, 256, 512]:
-        for attack in attacks_to_evaluate:
-            for seed_num in range(5):
+        for ai in range(len(attacks_to_evaluate)):
+            attack_id = hashlib.sha256(f"{ai}{time_lib.time()}{random.randint(0, 1000000)}{time_at_start_of_process}".encode()).hexdigest()
+            for seed_num in seeds:
+                # Instantiate attack
+                attack = attacks_to_evaluate[ai]()
 
+                # Initialize wandb
                 timenow = datetime.now().strftime("%Y%m%d_%H%M%S")
-                run_name = f"{OAT_OR_BASE}_{attack.name}_seed{seed_num}_{timenow}"
+                run_name = f"{OAT_OR_BASE}_{ai}_{attack.name}_seed{seed_num}_{timenow}"
                  
                 wandb.init(
                      project=WANDB_PROJECT,
                      entity=WANDB_ENTITY,
                      name=run_name,
-                     group=f"{OAT_OR_BASE}_{attack.name}", # Group by model and attack type
+                     group=time_at_start_of_process, # Group evals within a single process
                      config={
                          # TODO: alter to acquire from attack automatically
                          "model_type": OAT_OR_BASE,
                          "attack_name": attack.name,
+                         "attack_str": str(attack),
                          "attack_params": {
-                             "suffix_len": attack.suffix_length,
+                             "suffix_len": attack.suffix_length if isinstance(attack, SoftSuffixAttack) else None,
                              "num_epochs": attack.num_epochs,
                              "learning_rate": attack.learning_rate,
                              "batch_size": attack.batch_size,
@@ -117,6 +140,8 @@ def run_main():
                          "model_name": llm.name,
                          "probe_name": probe.name,
                          "do_non_attacked_eval": DO_NON_ATTACKED_EVAL,
+                         "defender_flop_cost": model_details["flops"] + probe_details["flops"],
+                         "attack_id": attack_id,
                      },
                      reinit=True # Allow re-initialization in loops
                 )
@@ -127,12 +152,13 @@ def run_main():
 
                 try:
                     run_universal_eval(attack=attack, llm=llm, harmful=harmful, harmless_probe_scores=harmless_probe_scores, probe=probe, do_non_attacked_eval=DO_NON_ATTACKED_EVAL,
-                                    callback_steps=range(0, 150, 10), seed=seed_num)
+                                    callback_steps=callback_steps, seed=seed_num, num_harmful_test_samples=num_harmful_test_samples)
                 except Exception as e:
                     print(f"Error running attack: {e}")
                     print(traceback.format_exc())
                 finally:
                     wandb.finish()
+                    del attack
         print_timey("Finished all attacks for model. Deleting probe and model...")
         print_mem_usage()
         del probe
