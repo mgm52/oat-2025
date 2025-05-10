@@ -1,14 +1,16 @@
 from dataclasses import dataclass
+from random import random
 import re
 import torch
 from typing import List, Any, Optional, Tuple, Callable
 from tqdm import tqdm
 
-from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
-from oat_evaluation.llms.api_llm import PairAttackerResponse
+from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement, flop_to_usd, usd_to_flop
+from oat_evaluation.llms.api_llm import ApiLLM, PairAttackerResponse
+from oat_evaluation.llms.autollm import AutoLLM
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
-from oat_evaluation.utils import FlopCounter, print_mem_usage
+from oat_evaluation.utils import FlopCounter, TokenCounter, print_mem_usage
 from oat_evaluation.utils import calculate_forward_flops
 from .pair_utils.system_prompts import get_attacker_system_prompts, get_judge_system_prompt
 from .pair_utils.common import extract_json, get_init_msg, process_target_response  
@@ -78,7 +80,7 @@ class PAIRAttack(Attack):
                     param.requires_grad = False
         
         final_llm_responses = LLMResponses([], [], [])
-        final_attack_details = AttackDetails(None, None, None, None)
+        final_attack_details = AttackDetails()
         for prompt, target in tqdm(zip(prompts, harmful_responses), total=len(prompts), desc="Processing prompts"):
             for attempt in range(self.max_cuda_oom_retries):
                 try:
@@ -91,6 +93,7 @@ class PAIRAttack(Attack):
                         probe_to_obfuscate,
                         probe_refusal_threshold
                     )
+                    print(attack_details)
                     # Merge outputs
                     final_llm_responses += llm_responses
                     final_attack_details += attack_details
@@ -107,7 +110,8 @@ class PAIRAttack(Attack):
                         print("Max retries reached. Skipping.")
                         # Handle failure (e.g., skip or raise)
                         final_llm_responses += LLMResponses([""], [], [])
-                        final_attack_details += AttackDetails(0, prompt, None, None)
+                        final_attack_details += AttackDetails(0, prompt)
+        print(final_attack_details)
         return final_llm_responses, final_attack_details
 
     def _run_single_attack(self,
@@ -123,12 +127,18 @@ class PAIRAttack(Attack):
         max_num_iterations = self.max_num_iterations
         keep_last_n = self.keep_last_n_in_convs
         max_json_attempts = self.max_json_attempts
-        flop_counter = FlopCounter()
         
         memory_before = print_mem_usage(print_mem=False)
 
         if attack_llm is None or target_llm is None or judge_llm is None:
             raise LLMsNotSetException(f"Attack, Target and Judge LLMs must be set, got: {(attack_llm, target_llm, judge_llm)}")
+
+        # TODO: Currently only supports this configuration for FLOP counts
+        assert isinstance(attack_llm, ApiLLM)
+        assert isinstance(judge_llm, ApiLLM)
+        assert isinstance(target_llm, AutoLLM)
+        local_flop_counter = FlopCounter()
+        api_token_counter = TokenCounter()
 
         # Seed initial conversations (trying different system prompts)
         task_msg: str = get_init_msg(goal, target_str)
@@ -221,15 +231,19 @@ Example of a correct response:
                     # Check for valid outputs and update the list
                     for i, (conv, full_output) in enumerate(zip(convs_subset, attacker_outputs)):
                         orig_index = batch_indices[i]
+
+                        # FLOPs for attacker model, using target LLM to tokenize
+                        num_input_tokens = attack_llm.get_num_tokens_in_chat([conv]) if conv[-1]["role"] == "user" else attack_llm.get_num_tokens_in_chat(conv[:-1])
+                        num_output_tokens = attack_llm.get_num_tokens_in_string(full_output)
+                        api_token_counter.num_input_tokens += num_input_tokens
+                        api_token_counter.num_output_tokens += num_output_tokens
+
                         # Update conversation
                         if convs[orig_index][-1]["role"] == "assistant":
                             convs[orig_index][-1]["content"] = full_output
                         else:
                             convs[orig_index].append({"role": "assistant", "content": full_output})
                         
-                        # FLOPs for attacker model, using target LLM to tokenize
-                        num_tokens = target_llm.get_num_tokens_in_chat(conv)
-                        flop_counter.num_flops += calculate_forward_flops(attack_llm.num_params, num_tokens)
 
                         attack_dict, json_str = extract_json(full_output)
                         if attack_dict is not None:
@@ -251,7 +265,7 @@ Example of a correct response:
             # TODO: Consider batching this, although it isn't too expensive/slow atm
             num_tokens = sum(target_llm.get_num_tokens_in_string(output) for output in llm_output_list)
             num_tokens += sum(target_llm.get_num_tokens_in_string(prompt) for prompt in adv_prompt_list)
-            flop_counter.num_flops += calculate_forward_flops(target_llm.num_params, num_tokens)
+            local_flop_counter.num_flops += calculate_forward_flops(target_llm.num_params, num_tokens)
             logger.debug("Finished getting target responses.")
             
             # Apply probe obfuscation if needed
@@ -270,9 +284,13 @@ Example of a correct response:
             # FLOPs for judge model, using target LLM to tokenize
             # TODO: Consider if padding was used in generation
             # TODO: Consider batching this, although it isn't too expensive/slow atm
-            num_tokens = sum(target_llm.get_num_tokens_in_string(prompt) for prompt in judge_prompts)
-            num_tokens += sum(target_llm.get_num_tokens_in_string(output) for output in scores_outputs)
-            flop_counter.num_flops += calculate_forward_flops(judge_llm.num_params, num_tokens)
+
+            # FLOPs for attacker model, using target LLM to tokenize
+            num_input_tokens = sum(judge_llm.get_num_tokens_in_string(prompt) for prompt in judge_prompts)
+            num_output_tokens = sum(judge_llm.get_num_tokens_in_string(output) for output in scores_outputs)
+            api_token_counter.num_input_tokens += num_input_tokens
+            api_token_counter.num_output_tokens += num_output_tokens
+
             for raw_output in scores_outputs:
                 pattern = r'\[\[(\d+)\]\]'
                 match = re.search(pattern, raw_output)
@@ -305,8 +323,24 @@ Example of a correct response:
                 logger.info("Found a jailbreak. Exiting.")
                 break
         
+        partial_flop_cost = local_flop_counter.num_flops
+        partial_dollar_cost = api_token_counter.num_input_tokens * attack_llm.usd_per_input_token + api_token_counter.num_output_tokens * attack_llm.usd_per_output_token
+        attack_details = self._get_attack_details(partial_flop_cost=partial_flop_cost, partial_dollar_cost=partial_dollar_cost, generated_str_prompts = adv_prompt_list)
         # wandb_logger.finish()
-        return LLMResponses([final_response], None, None), AttackDetails(flop_counter.num_flops, [final_prompt], None, None)
+        return LLMResponses([final_response], None, None), attack_details
+
+    def _get_attack_details(self, partial_flop_cost, partial_dollar_cost, generated_str_prompts):        
+        equivalent_flop_cost = partial_flop_cost + usd_to_flop(partial_dollar_cost)
+        equivalent_usd_cost = partial_dollar_cost + flop_to_usd(partial_flop_cost)
+        
+        attack_details = AttackDetails(flop_cost=equivalent_flop_cost, 
+                                       generated_str_prompts=generated_str_prompts,
+                                        usd_cost = equivalent_usd_cost,
+                                        partial_flop_cost=partial_flop_cost,
+                                        partial_usd_cost=partial_dollar_cost,
+                                       )
+        print(attack_details)
+        return attack_details
 
     def _get_new_adv_prompts_and_improvements(self, 
                                               prev_adv_prompt_list: Optional[list[str]],

@@ -50,7 +50,10 @@ class AttackDetails:
                              (self.generated_str_prompts or []) + (other.generated_str_prompts or []),
                              (self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
                              (self.generated_embedding_attack_function or other.generated_embedding_attack_function),
-                             (self.generated_str_attack_function or other.generated_str_attack_function)
+                             (self.generated_str_attack_function or other.generated_str_attack_function),
+                             usd_cost=(self.usd_cost or 0.) + (other.usd_cost or 0.),
+                             partial_flop_cost=(self.partial_flop_cost or 0) + (other.partial_flop_cost or 0),
+                             partial_usd_cost=(self.partial_usd_cost or 0.) + (other.partial_usd_cost or 0.),
         )
 
 

@@ -14,7 +14,7 @@ import nltk
 
 from oat_evaluation.llms.api_llm import ApiLLM
 from oat_evaluation.llms.autollm import AutoLLM
-from oat_evaluation.utils import FlopCounter, calculate_forward_flops, print_timey
+from oat_evaluation.utils import FlopCounter, TokenCounter, calculate_forward_flops, print_timey
 nltk.download('stopwords', download_dir=os.path.join(os.environ['STORAGE_HOME'], 'nltk_data'))
 nltk.download('punkt', download_dir=os.path.join(os.environ['STORAGE_HOME'], 'nltk_data'))
 nltk.download('wordnet', download_dir=os.path.join(os.environ['STORAGE_HOME'], 'nltk_data'))
@@ -333,7 +333,7 @@ class AutoDANAttack(Attack):
         
         prefix_string_init = None  # Optional: If we want to have a fixed prefix to the suffix
         infos = []
-        mutating_flop_counter = FlopCounter()
+        mutating_token_counter = TokenCounter()
         target_flop_counter = FlopCounter()
 
         # Iterate over prompts to attack
@@ -408,7 +408,7 @@ class AutoDANAttack(Attack):
                                                                         mutation=self.mutation,
                                                                         mutating_llm=self.mutating_llm,
                                                                         reference=reference,
-                                                                        flop_counter=mutating_flop_counter)
+                                                                        flop_counter=mutating_token_counter)
 
                     new_adv_suffixs = unfiltered_new_adv_suffixs
 
@@ -436,7 +436,7 @@ class AutoDANAttack(Attack):
                     total_steps += 1
                     # Execute callbacks if current step is in callback_steps
                     if total_steps in callback_steps:
-                        attack_details = self._get_attack_details(infos, target_flop_counter, mutating_flop_counter, generated_str_prompts)
+                        attack_details = self._get_attack_details(infos, target_flop_counter, mutating_token_counter, generated_str_prompts)
                         for callback in callbacks:
                             print_timey(f"Executing callback {callback.__name__} for step {total_steps}...")
                             callback(attack_details)
@@ -461,7 +461,7 @@ class AutoDANAttack(Attack):
                 
         # return best solution found
         generated_str_prompts = [self._insert_instruction_into_suffix_template(instruction, info["final_suffix"]) for instruction, info in zip(prompts, infos)]
-        attack_details = self._get_attack_details(infos, target_flop_counter, mutating_flop_counter, generated_str_prompts)
+        attack_details = self._get_attack_details(infos, target_flop_counter, mutating_token_counter, generated_str_prompts)
         # TODO: Return logits too in case they're useful
         return LLMResponses([info["final_respond"] for info in infos], None), attack_details
 

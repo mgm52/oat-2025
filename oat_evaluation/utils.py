@@ -71,12 +71,18 @@ def print_mem_usage(print_mem: bool = True):
         print(f"    [Memory reserved: {torch.cuda.memory_reserved() / 1024**2:.2f} MB]")
     return torch.cuda.memory_allocated() / 1024**2
 
+
 @dataclass
 class FlopCounter:
     num_flops: Optional[int] = 0
     # num_activations: int = 0
+
+    
+@dataclass
+class TokenCounter:
     num_input_tokens: Optional[int] = 0
     num_output_tokens: Optional[int] = 0
+
 
 def calculate_forward_flops(model_size, num_tokens):
     """
