@@ -4,10 +4,18 @@ from typing import List, Optional, Union, Type, TypeVar, Any
 import torch
 import openai
 from oat_evaluation.llms.llm import LLM, ExposedActivationsRequest, LLMResponses
-
+from enum import Enum
 from pydantic import BaseModel, Field
 from typing import Optional
 import json
+import anthropic
+from groq import Groq
+import instructor
+
+class ApiFormat(Enum):
+    OPENAI = "openai"
+    GROQ = "groq"
+    CLAUDE = "claude"
 
 T = TypeVar('T', bound=BaseModel)
 
@@ -61,6 +69,7 @@ class ApiLLM(LLM):
     base_url: str
     api_key: Optional[str] = None
     api_key_env_var: Optional[str] = None
+    api_format: ApiFormat = ApiFormat.OPENAI
     supports_structured_output: bool = False
     _num_layers: Optional[int] = None
     _num_params: Optional[int] = None
@@ -78,11 +87,19 @@ class ApiLLM(LLM):
         if not self.api_key:
             raise ValueError(f"API key must be provided either directly or through {self.api_key_env_var} environment variable")
         
-        # Initialize OpenAI client
-        self.client = openai.OpenAI(
-            base_url=self.base_url,
-            api_key=self.api_key
-        )
+        # Initialize client based on API format
+        if self.api_format == ApiFormat.OPENAI:
+            self.client = openai.OpenAI(
+                base_url=self.base_url,
+                api_key=self.api_key
+            )
+        elif self.api_format == ApiFormat.GROQ:
+            groq_client = Groq(api_key=self.api_key)
+            self.client = instructor.from_groq(groq_client, mode=instructor.Mode.JSON)
+        elif self.api_format == ApiFormat.CLAUDE:
+            self.client = anthropic.Anthropic(api_key=self.api_key)
+        else:
+            raise ValueError(f"Unsupported API format: {self.api_format}")
 
     def generate_responses(
         self,
@@ -104,7 +121,6 @@ class ApiLLM(LLM):
                 list[list[dict]]: list of conversations, e.g. [[{"role": "user", "content": ...}, ...]]
             exposed_activations_request: Request specifying which activation layers to extract (not supported for API)
             max_new_tokens: Maximum number of new tokens to generate
-            requires_grad: If True, gradients will be computed (not applicable for API)
             structured_output_type: Optional Pydantic model class for structured output
             temperature: Temperature for response generation
             
@@ -112,7 +128,7 @@ class ApiLLM(LLM):
             LLMResponses containing the generated responses. For structured output, the responses will be JSON strings.
             Note that logits and activations are not available through the API.
         """
-        if isinstance(prompts[0], torch.Tensor):
+        if prompts and isinstance(prompts[0], torch.Tensor):
             raise NotImplementedError("API LLM does not support tensor inputs")
         
         # Handle structured output if requested
@@ -124,28 +140,75 @@ class ApiLLM(LLM):
                 raise ValueError("For structured output, prompts must be a list containing a single conversation (list of message dicts)")
             
             try:
-                response = self.client.responses.parse(
-                    model=self.model_name,
-                    input=prompts[0],
-                    text_format=structured_output_type,
-                    temperature=temperature
-                )
-                # Convert structured output to JSON string
-                return LLMResponses(
-                    responses_strings=[response.output_parsed.model_dump_json()],
-                    responses_logits=None,
-                    activation_layers=None
-                )
+                if self.api_format == ApiFormat.OPENAI:
+                    response = self.client.responses.parse(
+                        model=self.model_name,
+                        input=prompts[0],
+                        text_format=structured_output_type,
+                        temperature=temperature
+                    )
+                    return LLMResponses(
+                        responses_strings=[response.output_parsed.model_dump_json()],
+                        responses_logits=None,
+                        activation_layers=None
+                    )
+                elif self.api_format == ApiFormat.GROQ:
+                    response = self.client.chat.completions.create(
+                        model=self.model_name,
+                        response_model=structured_output_type,
+                        messages=prompts[0],
+                        temperature=temperature,
+                        max_completion_tokens=max_new_tokens,
+                        stream=False
+                    )
+                    return LLMResponses(
+                        responses_strings=[response.model_dump_json()],
+                        responses_logits=None,
+                        activation_layers=None
+                    )
+                elif self.api_format == ApiFormat.CLAUDE:
+                    response = self.client.messages.create(
+                        model=self.model_name,
+                        max_tokens=max_new_tokens,
+                        messages=prompts[0],
+                        temperature=temperature
+                    )
+                    content = response.content[0].text
+                    structured_output = structured_output_type.model_validate_json(content)
+                    return LLMResponses(
+                        responses_strings=[structured_output.model_dump_json()],
+                        responses_logits=None,
+                        activation_layers=None
+                    )
             except AttributeError:
                 # Fallback for APIs that don't support the parse method but do support JSON response format
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=prompts[0],
-                    max_tokens=max_new_tokens,
-                    temperature=temperature,
-                    response_format={"type": "json_object"}
-                )
-                content = response.choices[0].message.content
+                if self.api_format == ApiFormat.OPENAI:
+                    response = self.client.chat.completions.create(
+                        model=self.model_name,
+                        messages=prompts[0],
+                        max_tokens=max_new_tokens,
+                        temperature=temperature,
+                        response_format={"type": "json_object"}
+                    )
+                    content = response.choices[0].message.content
+                elif self.api_format == ApiFormat.GROQ:
+                    response = self.client.chat.completions.create(
+                        model=self.model_name,
+                        messages=prompts[0],
+                        max_completion_tokens=max_new_tokens,
+                        temperature=temperature,
+                        stream=False
+                    )
+                    content = response.choices[0].message.content
+                elif self.api_format == ApiFormat.CLAUDE:
+                    response = self.client.messages.create(
+                        model=self.model_name,
+                        max_tokens=max_new_tokens,
+                        messages=prompts[0],
+                        temperature=temperature
+                    )
+                    content = response.content[0].text
+                
                 # Validate and convert to JSON string
                 structured_output = structured_output_type.model_validate_json(content)
                 return LLMResponses(
@@ -166,13 +229,31 @@ class ApiLLM(LLM):
             else:
                 raise ValueError(f"Unsupported prompt type: {type(prompt)}")
                 
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                max_tokens=max_new_tokens,
-                temperature=temperature
-            )
-            responses.append(response.choices[0].message.content)
+            if self.api_format == ApiFormat.OPENAI:
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    max_tokens=max_new_tokens,
+                    temperature=temperature
+                )
+                responses.append(response.choices[0].message.content)
+            elif self.api_format == ApiFormat.GROQ:
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    max_completion_tokens=max_new_tokens,
+                    temperature=temperature,
+                    stream=False
+                )
+                responses.append(response.choices[0].message.content)
+            elif self.api_format == ApiFormat.CLAUDE:
+                response = self.client.messages.create(
+                    model=self.model_name,
+                    max_tokens=max_new_tokens,
+                    messages=messages,
+                    temperature=temperature
+                )
+                responses.append(response.content[0].text)
             
         return LLMResponses(
             responses_strings=responses,
@@ -207,11 +288,18 @@ class ApiLLM(LLM):
         """
         if isinstance(prompts_or_embeddings[0], torch.Tensor):
             raise NotImplementedError("API LLM does not support tensor inputs")
-            
-        responses = []
+        if target_responses_or_embeddings and isinstance(target_responses_or_embeddings[0], torch.Tensor):
+            raise NotImplementedError("API LLM does not support tensor forced outputs")
+        
+        assert isinstance(target_responses_or_embeddings[0], str)
+
+        responses: list[str] = []
         for prompt, target in zip(prompts_or_embeddings, target_responses_or_embeddings):
             # For forced responses, we'll use the target response directly
-            responses.append(target)
+            if isinstance(target, str):
+                responses.append(target)
+            else:
+                raise ValueError(f"Expected target response to be of type str, got {type(target)}")
             
         return LLMResponses(
             responses_strings=responses,

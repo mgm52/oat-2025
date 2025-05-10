@@ -77,9 +77,11 @@ class LLM(ABC):
     @abstractmethod
     def generate_responses(
         self,
-        prompts_or_embeddings: Union[List[str], List[torch.Tensor]],
+        prompts_or_embeddings: Union[List[str], List[torch.Tensor], list[list[dict[str, str]]]],
         exposed_activations_request: Optional[ExposedActivationsRequest] = None,
         max_new_tokens: int = 64,
+        *args,
+        **kwargs,
     ) -> LLMResponses:
         """
         Generate responses for the given prompts using the model.
