@@ -30,3 +30,6 @@ git+https://github.com/dsbowen/strong_reject.git@main
 fastchat
 # fvcore  # For FLOP computation
 nltk
+groq
+instructor
+tiktoken

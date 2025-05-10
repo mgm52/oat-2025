@@ -6,11 +6,11 @@ import openai
 from oat_evaluation.llms.llm import LLM, ExposedActivationsRequest, LLMResponses
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Optional
 import json
 import anthropic
 from groq import Groq
 import instructor
+import tiktoken
 
 class ApiFormat(Enum):
     OPENAI = "openai"
@@ -62,6 +62,66 @@ def generate_json_response(llm, prompt: str, max_attempts: int = 3) -> Optional[
     
     return None
 
+def num_tokens_from_messages(messages, model="gpt-4o-mini-2024-07-18"):
+    """Return the number of tokens used by a list of messages."""
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        print("Warning: model not found. Using o200k_base encoding.")
+        encoding = tiktoken.get_encoding("o200k_base")
+    if model in {
+        "gpt-3.5-turbo-0125",
+        "gpt-4-0314",
+        "gpt-4-32k-0314",
+        "gpt-4-0613",
+        "gpt-4-32k-0613",
+        "gpt-4o-mini-2024-07-18",
+        "gpt-4o-2024-08-06"
+        }:
+        tokens_per_message = 3
+        tokens_per_name = 1
+    elif "gpt-3.5-turbo" in model:
+        print("Warning: gpt-3.5-turbo may update over time. Returning num tokens assuming gpt-3.5-turbo-0125.")
+        return num_tokens_from_messages(messages, model="gpt-3.5-turbo-0125")
+    elif "gpt-4o-mini" in model:
+        print("Warning: gpt-4o-mini may update over time. Returning num tokens assuming gpt-4o-mini-2024-07-18.")
+        return num_tokens_from_messages(messages, model="gpt-4o-mini-2024-07-18")
+    elif "gpt-4o" in model:
+        print("Warning: gpt-4o and gpt-4o-mini may update over time. Returning num tokens assuming gpt-4o-2024-08-06.")
+        return num_tokens_from_messages(messages, model="gpt-4o-2024-08-06")
+    elif "gpt-4" in model:
+        print("Warning: gpt-4 may update over time. Returning num tokens assuming gpt-4-0613.")
+        return num_tokens_from_messages(messages, model="gpt-4-0613")
+    else:
+        raise NotImplementedError(
+            f"""num_tokens_from_messages() is not implemented for model {model}."""
+        )
+    num_tokens = 0
+    
+    for message in messages:
+        num_tokens += tokens_per_message
+        for key, value in message.items():
+            num_tokens += len(encoding.encode(value))
+            if key == "name":
+                num_tokens += tokens_per_name
+    num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
+    return num_tokens
+
+# FIXME: Currently assumes TikToken tokenizer (e.g. OpenAI models use it)
+def get_num_tokens_in_chat(messages: List[List[dict]], model="gpt-4o-mini-2024-07-18") -> int:
+    """Return the number of tokens used by a list of chat messages."""
+    return num_tokens_from_messages(messages, model)
+
+def get_num_tokens_in_strings(strings: List[str], model="gpt-4o-mini-2024-07-18") -> int:
+    """Return the number of tokens used by a list of strings."""
+    total_tokens = 0
+    for string in strings:
+        total_tokens += len(tiktoken.encoding_for_model(model).encode(string))
+    return total_tokens
+
+def get_num_tokens_in_string(string: str, model="gpt-4o-mini-2024-07-18") -> int:
+    """Return the number of tokens used by a single string."""
+    return len(tiktoken.encoding_for_model(model).encode(string))
 
 @dataclass
 class ApiLLM(LLM):
@@ -71,6 +131,9 @@ class ApiLLM(LLM):
     api_key_env_var: Optional[str] = None
     api_format: ApiFormat = ApiFormat.OPENAI
     supports_structured_output: bool = False
+    avg_token_length: Optional[float] = None
+    usd_per_input_token: Optional[float] = None
+    usd_per_output_token: Optional[float] = None
     _num_layers: Optional[int] = None
     _num_params: Optional[int] = None
     _vocab_size: Optional[int] = None
@@ -95,7 +158,11 @@ class ApiLLM(LLM):
             )
         elif self.api_format == ApiFormat.GROQ:
             groq_client = Groq(api_key=self.api_key)
-            self.client = instructor.from_groq(groq_client, mode=instructor.Mode.JSON)
+            self.groq_client = groq_client
+            if self.supports_structured_output:
+                self.client = instructor.from_groq(groq_client, mode=instructor.Mode.JSON)
+            else:
+                self.client = groq_client  # Changed to set self.client to groq_client directly
         elif self.api_format == ApiFormat.CLAUDE:
             self.client = anthropic.Anthropic(api_key=self.api_key)
         else:
@@ -306,6 +373,15 @@ class ApiLLM(LLM):
             responses_logits=None,  # Not available through API
             activation_layers=None  # Not available through API
         )
+
+    def get_num_tokens_in_chat(self, convs: list[list[dict]]) -> int:
+        return sum(get_num_tokens_in_chat(conv) for conv in convs)
+
+    def get_num_tokens_in_strings(self, strings: list[str]) -> int:
+        return get_num_tokens_in_strings(strings)
+
+    def get_num_tokens_in_string(self, string: str) -> int:
+        return get_num_tokens_in_string(string)
         
     def string_to_embedding(self, string: str) -> torch.Tensor:
         """Not supported for API-based models"""

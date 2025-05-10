@@ -14,16 +14,34 @@ class BoxRequirement(Enum):
     BLACK_BOX = "black_box" # uses model output tokens
 
 
+# 624 bfloat16 TFLOPS for A100 SXM: https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf
+flops_per_second = 624 * 10**12
+# Based on runpod pricing
+usd_per_second = 1.89 / 3600
+USD_PER_FLOP = usd_per_second / flops_per_second
+
+
+def usd_to_flop(usd: float) -> float:
+    return int(usd / USD_PER_FLOP)
+
+
+def flop_to_usd(flop: float) -> float:
+    return flop * USD_PER_FLOP
+
+
 @dataclass
 class AttackDetails:
-    flop_cost: Optional[int] = None
+    flop_cost: Optional[int] = 0  # Obtained by converting the dollars to FLOPs too, corresponds to num_dollars_cost
     generated_str_prompts: Optional[List[str]] = None
     generated_embedding_prompts: Optional[List[torch.Tensor]] = None
     generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None
     generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
-    num_input_tokens: Optional[int] = None
-    num_output_tokens: Optional[int] = None
-    num_cents_cost: Optional[int] = None
+    num_input_tokens: Optional[int] = 0
+    num_output_tokens: Optional[int] = 0
+    usd_cost: Optional[float] = 0.  # Obtained by converting the FLOPs to dollars too, corresponds to flop_cost
+    
+    partial_flop_cost: Optional[int] = 0
+    partial_usd_cost: Optional[float] = 0.
 
     def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
         if not isinstance(other, AttackDetails):

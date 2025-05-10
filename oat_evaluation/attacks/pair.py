@@ -249,8 +249,8 @@ Example of a correct response:
             # FLOPs for target model
             # TODO: Consider if padding was used in generation
             # TODO: Consider batching this, although it isn't too expensive/slow atm
-            num_tokens = sum(target_llm.get_num_tokens_in_str(output) for output in llm_output_list)
-            num_tokens += sum(target_llm.get_num_tokens_in_str(prompt) for prompt in adv_prompt_list)
+            num_tokens = sum(target_llm.get_num_tokens_in_string(output) for output in llm_output_list)
+            num_tokens += sum(target_llm.get_num_tokens_in_string(prompt) for prompt in adv_prompt_list)
             flop_counter.num_flops += calculate_forward_flops(target_llm.num_params, num_tokens)
             logger.debug("Finished getting target responses.")
             
@@ -270,8 +270,8 @@ Example of a correct response:
             # FLOPs for judge model, using target LLM to tokenize
             # TODO: Consider if padding was used in generation
             # TODO: Consider batching this, although it isn't too expensive/slow atm
-            num_tokens = sum(target_llm.get_num_tokens_in_str(prompt) for prompt in judge_prompts)
-            num_tokens += sum(target_llm.get_num_tokens_in_str(output) for output in scores_outputs)
+            num_tokens = sum(target_llm.get_num_tokens_in_string(prompt) for prompt in judge_prompts)
+            num_tokens += sum(target_llm.get_num_tokens_in_string(output) for output in scores_outputs)
             flop_counter.num_flops += calculate_forward_flops(judge_llm.num_params, num_tokens)
             for raw_output in scores_outputs:
                 pattern = r'\[\[(\d+)\]\]'

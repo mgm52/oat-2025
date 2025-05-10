@@ -739,7 +739,10 @@ class AutoLLM(LLM):
         tokenized_chat = self._tokenize_chat(messages)
         return tokenized_chat["input_ids"].numel()
     
-    def get_num_tokens_in_str(self, string: str) -> int:
+    def get_num_tokens_in_strings(self, strings: list[str]) -> int:
+        return sum(self.get_num_tokens_in_string(s) for s in strings)
+
+    def get_num_tokens_in_string(self, string: str) -> int:
         tokenized = self._tokenizer(string, return_tensors="pt")
         return tokenized["input_ids"].numel()
     

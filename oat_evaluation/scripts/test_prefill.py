@@ -21,10 +21,10 @@ llama_4_scout_llm = ApiLLM(model_name = "meta-llama/llama-4-scout-17b-16e-instru
                            api_key_env_var="GROQ_API_KEY",
                            api_format=ApiFormat.GROQ
                            )
-llama_4_scout_llm._num_params = 17 * 1_000_000_000  # Must be set for FLOP computation
-# We're reusing the target/victim LLM as the attack and judge LLMs here, but they can be distinct
+llama_4_scout_llm._num_params = 17 * 1_000_000_000  # Must be set for FLOP computation (NA for prefill)
 
-target_llm = llama_4_scout_llm
+# TODO: Set the correct target/victim LLM
+target_llm = gemma_llm
 
 attacks_to_try = [
     PrefillAttack()

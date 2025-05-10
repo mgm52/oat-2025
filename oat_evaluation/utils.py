@@ -1,4 +1,4 @@
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 import numpy as np
 import torch
 from dataclasses import dataclass
@@ -73,8 +73,10 @@ def print_mem_usage(print_mem: bool = True):
 
 @dataclass
 class FlopCounter:
-    num_flops: int = 0
+    num_flops: Optional[int] = 0
     # num_activations: int = 0
+    num_input_tokens: Optional[int] = 0
+    num_output_tokens: Optional[int] = 0
 
 def calculate_forward_flops(model_size, num_tokens):
     """
