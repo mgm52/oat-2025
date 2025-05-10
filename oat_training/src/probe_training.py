@@ -801,6 +801,9 @@ def train_oat_probe_and_model(
                     input_ids=pos_batch_input_ids,
                     output_hidden_states=True,
                 )
+                if current_step == 0:
+                    print(f"Number of layers in model: {len(pos_output.hidden_states)}")
+                    print(f"Getting layer indices from hidden states (plus one): {layers}")
                 pos_acts = {
                     layer: pos_output.hidden_states[layer + 1] for layer in layers
                 }

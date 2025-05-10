@@ -97,10 +97,9 @@ def batched_generate_and_score(
     gen_fn = llm.generate_responses_forced if forced else llm.generate_responses
 
     print_mem_usage()
-    print(f"Generating responses...")
     for i in range(0, len(prompts), batch_size):
         #print_mem_usage()
-        print(f"Batch {i // batch_size + 1} of {len(prompts) // batch_size}")
+        print_timey(f"batch_generate_and_score: Forwarding batch {i // batch_size + 1} of {len(prompts) // batch_size}...")
         batch_p = prompts[i : i + batch_size]
         if forced:
             batch_r = references[i : i + batch_size]
@@ -108,20 +107,19 @@ def batched_generate_and_score(
         else:
             resp = gen_fn(batch_p, exposed_activations_request=probe.activation_extraction_request)
         strings.extend(resp.responses_strings)
-        print_timey(f"batch_generate_and_score: done generating responses in batch starting at index {i} of {len(prompts)}, about to compute scores...")
+        #print_timey(f"batch_generate_and_score: done generating responses in batch starting at index {i} of {len(prompts)}, about to compute scores...")
         scores.extend(probe.compute_scores(resp))
         #print_mem_usage()
         #print(f"Deleting...")
-        print_timey(f"batch_generate_and_score: deleting response objects...")
+        #print_timey(f"batch_generate_and_score: deleting response objects...")
         del resp.activation_layers
         del resp.responses_logits
         del resp
         if forced: del batch_r
         del batch_p
-        print_timey(f"batch_generate_and_score: done with deletion!")
+        #print_timey(f"batch_generate_and_score: done with deletion!")
         #torch.cuda.empty_cache(); gc.collect()
-        print_mem_usage()
-    print_timey(f"batch_generate_and_score: Done generating responses...")
+    print_timey(f"batch_generate_and_score: Done forwarding all {len(prompts)} prompts!")
     print_mem_usage()
 
 
@@ -265,7 +263,7 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
 
 
 def run_universal_eval(attack: Attack, llm: LLM, harmful: List[Dict], harmless_probe_scores: List[float], 
-         probe=None, do_non_attacked_eval=False, callback_steps=[20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300], seed=42):
+         probe=None, do_non_attacked_eval=False, callback_steps=[20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300], seed=42, num_harmful_test_samples=100):
     with torch.no_grad():
         
         # Set seed
@@ -277,10 +275,10 @@ def run_universal_eval(attack: Attack, llm: LLM, harmful: List[Dict], harmless_p
         harm_responses = [e["completion"] for e in harmful]
 
         # Test subsets (first 199 examples)
-        harm_prompts_test, harm_responses_test = harm_prompts[:100], harm_responses[:100]
+        harm_prompts_test, harm_responses_test = harm_prompts[:num_harmful_test_samples], harm_responses[:num_harmful_test_samples]
 
         # Train subsets (remaining examples)
-        harm_prompts_train, harm_responses_train = harm_prompts[100:], harm_responses[100:]
+        harm_prompts_train, harm_responses_train = harm_prompts[num_harmful_test_samples:], harm_responses[num_harmful_test_samples:]
 
         # Base model harmless -> FPR threshold
         print("\n=== BASE MODEL HARMLESS ===")
