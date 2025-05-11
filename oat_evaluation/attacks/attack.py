@@ -21,6 +21,7 @@ class AttackDetails:
     generated_embedding_prompts: Optional[List[torch.Tensor]] = None
     generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None
     generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
+    steps_trained: Optional[int] = None
 
     def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
         if not isinstance(other, AttackDetails):
@@ -53,9 +54,9 @@ class Attack(ABC):
             llm: The LLM to attack
             prompts: The original prompts to attack
             harmful_responses: Optional target responses, e.g. for soft-suffix attacks
-            probe_to_obfuscate: Optional probe to obfuscate against -- should pair use this??
-            generate_final_responses: Whether to run the final attack or just return the attack function -- when is this needed??
-            callback_steps: List of steps at which to execute callbacks -- what are steps??
+            probe_to_obfuscate: Optional probe to obfuscate against
+            generate_final_responses: Whether to run the final attack or just return the attack function
+            callback_steps: List of steps at which to execute callbacks
             callbacks: List of callback functions that take AttackDetails as input
             
         Returns:

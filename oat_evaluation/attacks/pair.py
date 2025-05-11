@@ -59,13 +59,11 @@ class PAIRAttack(Attack):
         Returns:
             Tuple containing LLMResponses and AttackDetails.
         """
-        assert generate_final_responses
-        assert callback_steps is None
-        assert callbacks is None
-        
         # Load attack, target and judge LLMs
         # Fallback on the target/victim LLM if the attack LLM and judge LLM are not set
         # Ensure no gradient updates are done with these LLMs
+        original_prompts = prompts # Store original prompts for lookup table
+
         attack_llm = self.attack_llm or llm
         judge_llm = self.judge_llm or llm
         target_llm = llm
@@ -99,16 +97,48 @@ class PAIRAttack(Attack):
                     print(f"Attempt {attempt + 1} failed: {e}")
                     torch.cuda.empty_cache()
                     if attempt < self.max_cuda_oom_retries - 1:
-                        # Adjust parameters, e.g., halve batch size
                         print(f"Previously {self.n_concurrent_jailbreaks=}")
-                        self.n_concurrent_jailbreaks = self.n_concurrent_jailbreaks // 2
+                        self.n_concurrent_jailbreaks = max(1, self.n_concurrent_jailbreaks // 2) # Ensure it's at least 1
                         print(f"Due to OOM, setting {self.n_concurrent_jailbreaks=}")
                     else:
                         print("Max retries reached. Skipping.")
                         # Handle failure (e.g., skip or raise)
                         final_llm_responses += LLMResponses([""], [], [])
                         final_attack_details += AttackDetails(0, prompt, None, None)
-        return final_llm_responses, final_attack_details
+
+                        # Ensure generated_str_prompts has an entry for each original_prompt
+                        if final_attack_details.generated_str_prompts is None:
+                            final_attack_details.generated_str_prompts = []
+                        final_attack_details.generated_str_prompts.append(prompt)
+        
+        # Ensure generated_str_prompts has the same length as original_prompts
+        if final_attack_details.generated_str_prompts is None or \
+           len(final_attack_details.generated_str_prompts) != len(original_prompts):
+            print(f"Warning: Mismatch between original prompts ({len(original_prompts)}) and generated jailbroken prompts ({len(final_attack_details.generated_str_prompts if final_attack_details.generated_str_prompts else 0)}). Using original prompts as fallback for missing ones.")
+            # Fallback: create a list of original prompts if jailbroken ones are missing
+            temp_jailbroken_prompts = final_attack_details.generated_str_prompts or []
+            jailbroken_prompts_for_map = [
+                temp_jailbroken_prompts[i] if i < len(temp_jailbroken_prompts) else original_prompts[i]
+                for i in range(len(original_prompts))
+            ]
+        else:
+            jailbroken_prompts_for_map = final_attack_details.generated_str_prompts
+
+        prompt_to_jailbreak_map = {
+            orig_prompt: jailbroken_prompt 
+            for orig_prompt, jailbroken_prompt in zip(original_prompts, jailbroken_prompts_for_map)
+        }
+
+        def _lookup_attack_function(input_prompts: List[str]) -> List[str]:
+            return [prompt_to_jailbreak_map.get(p, p) for p in input_prompts] # Return original if not found
+
+        final_attack_details.generated_str_attack_function = _lookup_attack_function
+        final_attack_details.steps_trained = len(original_prompts) # Use number of prompts processed as steps
+
+        if generate_final_responses:
+            return final_llm_responses, final_attack_details
+        else:
+            return LLMResponses([], [], []), final_attack_details
 
     def _run_single_attack(self,
                            attack_llm: Optional[LLM],

@@ -348,11 +348,11 @@ class SoftSuffixAttack(Attack):
                         print_timey(f"Executing callback {callback.__name__} for step {total_steps}...")
                         callback(attack_details)
 
-                if (total_steps) % 128 == 0:
-                    print(f"total_steps % 128 == 0! Decreasing LR by 25% (from {self.learning_rate} to {self.learning_rate * 0.75:.4f})")
-                    self.learning_rate *= 0.75
-                    for param_group in optimizer.param_groups:
-                        param_group['lr'] *= 0.75  # halve the learning rate
+                # if (total_steps) % 128 == 0:
+                #     print(f"total_steps % 128 == 0! Decreasing LR by 25% (from {self.learning_rate} to {self.learning_rate * 0.75:.4f})")
+                #     self.learning_rate *= 0.75
+                #     for param_group in optimizer.param_groups:
+                #         param_group['lr'] *= 0.75  # halve the learning rate
                 
                 if self.max_steps > 0 and total_steps >= self.max_steps:
                     print(f"Reached max steps ({self.max_steps}). Stopping training.")
