@@ -45,6 +45,7 @@ class AutoLLM(LLM):
                                     )
 
         print_timey(f"Loading model from {model_path}...")
+        self.model_path = model_path
 
         #torch._dynamo.config.cache_size_limit = 64  # Increase cache size
         # --- Speed Improvement Suggestion ---
