@@ -50,12 +50,6 @@ if __name__ == "__main__":
         responses * 16
     )
     print_timey("Finished StrongRejectBatchGrader.")
-    # grader = StrongRejectGrader()
-    # sr_results = grader.grade_harm(
-    #     prompts * 5,
-    #     responses * 5
-    # )
-    # print_timey("Finished StrongRejectGrader")
 
     print(f"\nStrongRejectBatchGrader results: {srb_results}")
     # print(f"StrongRejectGrader results: {sr_results}")
