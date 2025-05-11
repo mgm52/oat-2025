@@ -526,3 +526,6 @@ class AutoDANAttack(Attack):
 
         jailbroken = not any([prefix in gen_str for prefix in self.test_prefixes])
         return jailbroken, gen_str
+
+    def __str__(self) -> str:
+        return f"{self.name}(template_name={self.template_name}, genetic_algo_type={self.genetic_algo_type}, num_steps={self.num_steps}, generation_size={self.generation_size}, proportion_elites={self.proportion_elites}, crossover={self.crossover}, num_points={self.num_points}, mutation={self.mutation})"

@@ -216,3 +216,6 @@ class PrefillAttack(Attack):
         llm_responses.responses_strings = [conv[-1]["content"] + response for (conv, response) in zip(convs, llm_responses.responses_strings)]
 
         return llm_responses, AttackDetails(flop_cost=0)
+
+    def __str__(self) -> str:
+        return f"{self.name}()"  # PrefillAttack has no additional hyperparameters beyond the base class

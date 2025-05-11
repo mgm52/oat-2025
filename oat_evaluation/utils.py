@@ -25,12 +25,12 @@ def load_config_and_set_vars():
         raise FileNotFoundError(f"config.yaml file not found in oat_evaluation... See config_example.yaml for an example, then create your own config.yaml file.")
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
-
-    wandb.login(key=config["WANDB_API_KEY"])
     
-    for key in ["OPENAI_API_KEY", "HF_TOKEN", "STORAGE_HOME"]:
+    for key in ["OPENAI_API_KEY", "HF_TOKEN", "STORAGE_HOME", "WANDB_API_KEY"]:
         if key in config:
             os.environ[key] = config[key]
+
+    wandb.login(key=os.environ["WANDB_API_KEY"])
     
     if "HF_HOME" in config:
         os.environ["HF_HOME"] = config["HF_HOME"]
