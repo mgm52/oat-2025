@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import collections
 import contextlib
 from enum import Enum
+import gc
 import time
 import logging
 from typing import Callable, List, Dict, Any, Optional, Tuple, Union
@@ -13,6 +14,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from oat_evaluation.llms.llm import LLM, ExposedActivationsRequest, LLMResponses, TokenSelectionMethod
 from oat_evaluation.utils import FlopCounter, print_timey
 from contextlib import contextmanager
+from oat_evaluation.llms.metrics import LLMMetricsTracker
+
 
 @contextmanager
 def add_fwd_hooks(module_forward_pre_hooks: List[Tuple[torch.nn.Module, Callable]]):
@@ -237,7 +240,7 @@ class AutoLLM(LLM):
                                                use_cache=True,
                                                )
                 if self.debug_mode:
-                    print_timey(f"Model generation complete. Decoding...")
+                    print_timey("Model generation complete. Decoding...")
                 start_length = tokenized_chat["input_ids"].shape[1]
 
                 decoded_responses = [
@@ -248,16 +251,20 @@ class AutoLLM(LLM):
                 if self.debug_mode:
                     print_timey(f"Outputs.sequences: {outputs.sequences}")
                     print_timey(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
-                    #print_timey(f"Total tokens used: {num_tokens} (input: {input_tokens}, output: {output_tokens})")
 
                 sequences = outputs.sequences
                 del outputs
+
+                # Track metrics
+                num_input_tokens = tokenized_chat["input_ids"].shape[1]
+                num_output_tokens = sum(len(seq) - start_length for seq in sequences)
+                LLMMetricsTracker.update_metrics(self, num_input_tokens, num_output_tokens)
 
                 # TODO: Update generate_responses_forced() to also handle full conversations
                 #   list[list[dict]]: list of conversations, e.g. [[{"role": "user", "content": ...}, ...]]
                 if isinstance(prompts[0], str):
                     if self.debug_mode:
-                        print_timey(f"Force-forwarding responses to get logits & activations...")
+                        print_timey("Force-forwarding responses to get logits & activations...")
                     forced_responses = self.generate_responses_forced(
                         prompts,
                         decoded_responses,
@@ -265,7 +272,7 @@ class AutoLLM(LLM):
                         requires_grad=requires_grad,
                     )
                     if self.debug_mode:
-                        print_timey(f"Force-forwarding complete. Returning LLMResponses!")
+                        print_timey("Force-forwarding complete. Returning LLMResponses!")
 
                     return LLMResponses(
                         responses_strings=decoded_responses,
@@ -303,6 +310,11 @@ class AutoLLM(LLM):
                     torch.cuda.empty_cache()
 
                 if self.debug_mode: print(f"Decoded responses (len {len(decoded_responses)}): {decoded_responses}")
+
+                # Track metrics
+                num_input_tokens = gen_embeddings_tensor.shape[1]
+                num_output_tokens = sum(len(seq) - start_length for seq in sequences)
+                LLMMetricsTracker.update_metrics(self, num_input_tokens, num_output_tokens)
 
                 # Convert to embeddings
                 responses_embeddings = [self.string_to_embedding(response) for response in decoded_responses]
@@ -498,7 +510,7 @@ class AutoLLM(LLM):
 
     def generate_responses_forced(
         self,
-        prompts_or_embeddings: Union[List[str], List[torch.Tensor]],
+        prompts_or_embeddings: Union[List[str], List[torch.Tensor], List[List[dict]]],
         target_responses_or_embeddings: Union[List[str], List[torch.Tensor]],
         exposed_activations_request: Optional[ExposedActivationsRequest] = None,
         add_response_ending: bool = False,
@@ -546,8 +558,8 @@ class AutoLLM(LLM):
                 
                 # Clear batch results to free memory
                 del batch_result
-                if not requires_grad:
-                    torch.cuda.empty_cache()
+                gc.collect()
+                torch.cuda.empty_cache()
                 
             return LLMResponses(
                 responses_strings=all_responses,
@@ -781,6 +793,16 @@ class AutoLLM(LLM):
             if self.debug_mode:
                 print_timey(f"Returning LLMResponses from forced forward!")
 
+            # Track metrics for forced generation
+            if isinstance(prompts_or_embeddings[0], str):
+                num_input_tokens = sum(self.get_num_tokens_in_string(prompt) for prompt in prompts_or_embeddings)
+                num_output_tokens = sum(self.get_num_tokens_in_string(response) for response in target_responses_or_embeddings)
+            else:
+                num_input_tokens = sum(prompt.shape[1] for prompt in prompts_or_embeddings)
+                num_output_tokens = sum(response.shape[1] for response in target_responses_or_embeddings)
+            
+            LLMMetricsTracker.update_metrics(self, num_input_tokens, num_output_tokens)
+
             # Return logits that may or may not have gradients attached based on requires_grad
             return LLMResponses(
                 responses_strings=decoded_responses,
@@ -806,7 +828,10 @@ class AutoLLM(LLM):
         tokenized_chat = self._tokenize_chat(messages)
         return tokenized_chat["input_ids"].numel()
     
-    def get_num_tokens_in_str(self, string: str) -> int:
+    def get_num_tokens_in_strings(self, strings: list[str]) -> int:
+        return sum(self.get_num_tokens_in_string(s) for s in strings)
+
+    def get_num_tokens_in_string(self, string: str) -> int:
         tokenized = self._tokenizer(string, return_tensors="pt")
         return tokenized["input_ids"].numel()
     

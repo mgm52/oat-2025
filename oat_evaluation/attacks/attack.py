@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, List, Dict, Any, Optional, Tuple, Union
+from typing import Callable, List, Any, Optional, Tuple
 
 import torch
 from oat_evaluation.llms.llm import LLM, LLMResponses
@@ -14,23 +14,55 @@ class BoxRequirement(Enum):
     BLACK_BOX = "black_box" # uses model output tokens
 
 
+# 624 bfloat16 TFLOPS for A100 SXM: https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf
+flops_per_second = 624 * 10**12
+# Based on runpod pricing
+usd_per_second = 1.89 / 3600
+USD_PER_FLOP = usd_per_second / flops_per_second
+
+
+def usd_to_flop(usd: float) -> float:
+    return int(usd / USD_PER_FLOP)
+
+
+def flop_to_usd(flop: float) -> float:
+    return flop * USD_PER_FLOP
+
+
 @dataclass
 class AttackDetails:
-    flop_cost: Optional[int] = None
+    flop_cost: Optional[int] = 0
     generated_str_prompts: Optional[List[str]] = None
     generated_embedding_prompts: Optional[List[torch.Tensor]] = None
     generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None
     generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
+    
+    equivalent_flop_cost: Optional[int] = 0  # Obtained by converting the dollars to FLOPs too, corresponds to equivalent_usd_cost
+    equivalent_usd_cost: Optional[float] = 0.  # Obtained by converting the FLOPs to dollars too, corresponds to equivalent_flop_cost
+    local_flop_cost: Optional[int] = 0
+    api_usd_cost: Optional[float] = 0.
+    
+    used_api_llm: bool = False  # Whether API calls were used
+    num_total_tokens: Optional[int] = 0
+    num_api_calls: Optional[int] = 0
+    
     steps_trained: Optional[int] = None
-
+    
     def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
         if not isinstance(other, AttackDetails):
             raise NotImplementedError(f"Expected type AttackDetails, got type {type(other)}")
-        return AttackDetails((self.flop_cost or 0) + (other.flop_cost or 0),
-                             (self.generated_str_prompts or []) + (other.generated_str_prompts or []),
-                             (self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
-                             (self.generated_embedding_attack_function or other.generated_embedding_attack_function),
-                             (self.generated_str_attack_function or other.generated_str_attack_function)
+        return AttackDetails(flop_cost=self.flop_cost + other.flop_cost,
+                             equivalent_flop_cost=(self.equivalent_flop_cost or 0) + (other.equivalent_flop_cost or 0),
+                             generated_str_prompts=(self.generated_str_prompts or []) + (other.generated_str_prompts or []),
+                             generated_embedding_prompts=(self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
+                             generated_embedding_attack_function=(self.generated_embedding_attack_function or other.generated_embedding_attack_function),
+                             generated_str_attack_function=(self.generated_str_attack_function or other.generated_str_attack_function),
+                             equivalent_usd_cost=(self.equivalent_usd_cost or 0.) + (other.equivalent_usd_cost or 0.),
+                             local_flop_cost=(self.local_flop_cost or 0) + (other.local_flop_cost or 0),
+                             api_usd_cost=(self.api_usd_cost or 0.) + (other.api_usd_cost or 0.),
+                             used_api_llm=self.used_api_llm or other.used_api_llm,
+                             num_total_tokens=self.num_total_tokens + other.num_total_tokens,
+                             num_api_calls=self.num_api_calls + other.num_api_calls,
         )
 
 
@@ -40,12 +72,12 @@ class Attack(ABC):
         self,
         llm: LLM,
         prompts: List[str],
-        harmful_responses: List[str] = None,
+        harmful_responses: Optional[List[str]] = None,
         probe_to_obfuscate: Optional[Probe] = None,
         probe_refusal_threshold: Optional[float] = None,
         generate_final_responses: bool = True,
-        callback_steps: List[int] = None,
-        callbacks: List[Callable[[AttackDetails], Any]] = None
+        callback_steps: Optional[List[int]] = None,
+        callbacks: Optional[List[Callable[[AttackDetails], Any]]] = None
     ) -> Tuple[LLMResponses, AttackDetails]:
         """
         Generate harmful responses for the given prompts by attacking the LLM.
@@ -62,25 +94,31 @@ class Attack(ABC):
         Returns:
             Tuple containing LLMResponses and AttackDetails.
         """
-        pass
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def is_universal(self) -> bool:
         """Whether this attack is universal or per-prompt."""
-        pass
+        raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def is_cross_model_transferrable(self) -> bool:
+        """Whether this attack can transfer across models. (e.g. GCG)"""
+        raise NotImplementedError
+    
     @property
     @abstractmethod
     def box_requirement(self) -> BoxRequirement:
         """Whether this attack is white-box (activations) / black-box (tokens) / gray-box (logits)."""
-        pass
-
+        raise NotImplementedError
+    
     @property
     @abstractmethod
     def can_perform_obfuscation(self) -> bool:
         """Whether this attack can perform probe-obfuscation."""
-        pass
+        raise NotImplementedError
 
     @property
     def name(self) -> str:

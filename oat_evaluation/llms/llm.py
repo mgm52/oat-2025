@@ -77,9 +77,11 @@ class LLM(ABC):
     @abstractmethod
     def generate_responses(
         self,
-        prompts_or_embeddings: Union[List[str], List[torch.Tensor]],
+        prompts_or_embeddings: Union[List[str], List[torch.Tensor], list[list[dict[str, str]]]],
         exposed_activations_request: Optional[ExposedActivationsRequest] = None,
         max_new_tokens: int = 64,
+        *args,
+        **kwargs,
     ) -> LLMResponses:
         """
         Generate responses for the given prompts using the model.
@@ -92,7 +94,7 @@ class LLM(ABC):
         Returns:
             LLMResponses containing the generated responses, their logits, and the extracted activation layers.
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def generate_responses_forced(
@@ -115,7 +117,7 @@ class LLM(ABC):
         Returns:
             LLMResponses containing the generated responses, their logits, and the extracted activation layers.
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def string_to_embedding(self, string: str) -> torch.Tensor:
@@ -172,10 +174,51 @@ class LLM(ABC):
         """The dtype of the model"""
         pass
 
+    @abstractmethod
+    def get_num_tokens_in_chat(self, messages: list[list[dict]]) -> int:
+        """
+        Get the number of tokens in a chat conversation.
+        
+        Args:
+            messages: List of chat messages, where each message is a list of dicts with 'role' and 'content' keys
+            
+        Returns:
+            Total number of tokens in the conversation
+        """
+        pass
+
+    @abstractmethod
+    def get_num_tokens_in_strings(self, strings: list[str]) -> int:
+        """
+        Get the total number of tokens across multiple strings.
+        
+        Args:
+            strings: List of strings to count tokens for
+            
+        Returns:
+            Total number of tokens across all strings
+        """
+        pass
+
+    @abstractmethod
+    def get_num_tokens_in_string(self, string: str) -> int:
+        """
+        Get the number of tokens in a single string.
+        
+        Args:
+            string: The string to count tokens for
+            
+        Returns:
+            Number of tokens in the string
+        """
+        pass
+
     @property
     def name(self) -> str:
         """The name of the model"""
         return self.__class__.__name__
+
+
     
     # TODO: consider how to support attacks injected into activation space...
     # We'll need to be able to extract activations, give them to an arbitrary attack function, then continue generation....

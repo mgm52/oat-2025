@@ -12,6 +12,7 @@ MODEL_PATHS:
   llama_3_8b_lat: "LLM-LAT/robust-llama3-8b-instruct"
   gemma: "google/gemma-2-9b-it"
   llama: "meta-llama/Meta-Llama-3-8B-Instruct" 
-HF_HOME: "/workspace/.cache/huggingface" # Defaults to "~/.cache/huggingface"... But /workspace/ is runpod's network volume
-# HF_TOKEN: "hf_<INSERT_HERE>"
-# OPENAI_API_KEY: "sk-proj-<INSERT-HERE>"
+STORAGE_HOME: "/workspace/storage"
+HF_HOME: "/workspace/.cache/huggingface"  # Defaults to "~/.cache/huggingface"... But /workspace/ is runpod's network volume
+HF_TOKEN: "hf_<INSERT_HERE>"  # TODO: Change this to your HuggingFace token
+OPENAI_API_KEY: "sk-proj-<INSERT-HERE>"  # TODO: Change this to your OpenAI API key

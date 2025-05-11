@@ -1,4 +1,4 @@
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 import numpy as np
 import torch
 from dataclasses import dataclass
@@ -25,13 +25,16 @@ def load_config_and_set_vars():
         raise FileNotFoundError(f"config.yaml file not found in oat_evaluation... See config_example.yaml for an example, then create your own config.yaml file.")
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
-
-    wandb.login(key=config["WANDB_API_KEY"])
     
-    os.environ["OPENAI_API_KEY"] = config["OPENAI_API_KEY"]
-    os.environ["HF_HOME"] = config["HF_HOME"]
-    os.environ["HF_HUB_CACHE"] = f"{config['HF_HOME']}/hub"
-    os.environ["HF_TOKEN"] = config["HF_TOKEN"]
+    for key in ["OPENAI_API_KEY", "HF_TOKEN", "STORAGE_HOME", "WANDB_API_KEY"]:
+        if key in config:
+            os.environ[key] = config[key]
+
+    wandb.login(key=os.environ["WANDB_API_KEY"])
+    
+    if "HF_HOME" in config:
+        os.environ["HF_HOME"] = config["HF_HOME"]
+        os.environ["HF_HUB_CACHE"] = f"{config['HF_HOME']}/hub"
     return config
 
 def get_available_gpus():
@@ -231,10 +234,18 @@ def print_mem_usage(print_mem: bool = True):
         print(f"    [Memory reserved: {torch.cuda.memory_reserved() / 1024**2:.2f} MB]")
     return torch.cuda.memory_allocated() / 1024**2
 
+
 @dataclass
 class FlopCounter:
-    num_flops: int = 0
+    num_flops: Optional[int] = 0
     # num_activations: int = 0
+
+    
+@dataclass
+class TokenCounter:
+    num_input_tokens: Optional[int] = 0
+    num_output_tokens: Optional[int] = 0
+
 
 def calculate_forward_flops(model_size, num_tokens):
     """
