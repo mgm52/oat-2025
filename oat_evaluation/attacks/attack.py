@@ -30,8 +30,9 @@ class AttackDetails:
                              (self.generated_str_prompts or []) + (other.generated_str_prompts or []),
                              (self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
                              (self.generated_embedding_attack_function or other.generated_embedding_attack_function),
-                             (self.generated_str_attack_function or other.generated_str_attack_function)
-        )
+                             (self.generated_str_attack_function or other.generated_str_attack_function),
+                             max(self.steps_trained or 0, other.steps_trained or 0)
+                             )
 
 
 class Attack(ABC):
@@ -68,6 +69,12 @@ class Attack(ABC):
     @abstractmethod
     def is_universal(self) -> bool:
         """Whether this attack is universal or per-prompt."""
+        pass
+
+    @property
+    @abstractmethod
+    def is_slow(self) -> bool:
+        """Whether this attack is slow enough to warrant fewer seeds / tests!"""
         pass
 
     @property

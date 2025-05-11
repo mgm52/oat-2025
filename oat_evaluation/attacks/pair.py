@@ -22,7 +22,7 @@ class LLMsNotSetException(Exception): ...
 class PAIRAttack(Attack):
     is_universal: bool = False  # Whether this attack is universal or per-prompt.
     box_requirement: BoxRequirement = BoxRequirement.BLACK_BOX  # Whether this attack is white-box (activations) / black-box (tokens) / gray-box (logits).
-    can_perform_obfuscation: bool = False  # Whether this attack can perform probe-obfuscation.
+    can_perform_obfuscation: bool = True  # Whether this attack can perform probe-obfuscation.
     n_concurrent_jailbreaks: int = 3  # Number of concurrent jailbreaks 
     max_num_iterations: int = 2  # The max number of rounds the attacker can try improving on the prompt (this is multiplied by n_concurrent_jailbreaks)
     keep_last_n_in_convs: int = 16  # For truncating the number of rounds for the attacker to keep within the context length
@@ -275,7 +275,12 @@ Example of a correct response:
             print(f"Memory after: {memory_after} MB")
             
             # Get responses from target LLM
-            llm_output_list = target_llm.generate_responses(adv_prompt_list, max_new_tokens=self.max_new_victim_tokens).responses_strings
+            llm_output_responses = target_llm.generate_responses(
+                adv_prompt_list,
+                max_new_tokens=self.max_new_victim_tokens,
+                exposed_activations_request=probe_to_obfuscate.activation_extraction_request if probe_to_obfuscate else None
+            )
+            llm_output_list = llm_output_responses.responses_strings
             # FLOPs for target model
             # TODO: Consider if padding was used in generation
             num_tokens = sum(target_llm.get_num_tokens_in_str(output) for output in llm_output_list)
@@ -285,11 +290,12 @@ Example of a correct response:
             
             # Apply probe obfuscation if needed
             if probe_to_obfuscate is not None and probe_refusal_threshold is not None:
-                probe_scores = probe_to_obfuscate.get_scores(llm_output_list)
+                probe_scores = probe_to_obfuscate.compute_scores(llm_output_responses)
                 for i, score in enumerate(probe_scores):
-                    if score > probe_refusal_threshold:
+                    float_score = float(score)
+                    if float_score > probe_refusal_threshold:
                         llm_output_list[i] = "I cannot answer that."
-                        logger.debug(f"Probe score {score} above threshold {probe_refusal_threshold}, replacing response with refusal.")
+                        print(f"Probe score {float_score} above threshold {probe_refusal_threshold}, so replacing response with refusal.")
             
             # Get judge scores
             sys_prompt = get_judge_system_prompt(goal, target_str)
@@ -335,6 +341,10 @@ Example of a correct response:
         
         # wandb_logger.finish()
         return LLMResponses([final_response], None, None), AttackDetails(flop_counter.num_flops, [final_prompt], None, None)
+
+    @property
+    def is_slow(self) -> bool:
+        return True
 
     def _get_new_adv_prompts_and_improvements(self, 
                                               prev_adv_prompt_list: Optional[list[str]],

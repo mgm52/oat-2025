@@ -54,6 +54,10 @@ class PerturbationAttack(Attack):
             scale = (row_norms / epsilon).clamp(min=1.0)
             perturbation.div_(scale)  # divides each row by scale if norm > epsilon
 
+    @property
+    def is_slow(self) -> bool:
+        return False
+
     def run_attack(
         self,
         llm: LLM,
@@ -353,7 +357,8 @@ class PerturbationAttack(Attack):
                     attack_details = AttackDetails(
                         flop_cost=flop_count,
                         generated_embedding_prompts=apply_perturbation(prompt_embeddings, perturbation),
-                        generated_embedding_attack_function=lambda ps: apply_perturbation(ps, perturbation)
+                        generated_embedding_attack_function=lambda ps: apply_perturbation(ps, perturbation),
+                        steps_trained=total_steps
                     )
                     for callback in callbacks:
                         print_timey(f"Executing callback {callback.__name__} for step {total_steps}...")
@@ -393,7 +398,8 @@ class PerturbationAttack(Attack):
         attack_details = AttackDetails(
             flop_cost=flop_count,
             generated_embedding_prompts=final_prompt_embeddings,
-            generated_embedding_attack_function=lambda ps: apply_perturbation(ps, perturbation)
+            generated_embedding_attack_function=lambda ps: apply_perturbation(ps, perturbation),
+            steps_trained=total_steps
         )
         return final_responses, attack_details
 
