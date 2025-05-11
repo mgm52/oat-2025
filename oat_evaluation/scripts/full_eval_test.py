@@ -1,6 +1,8 @@
 import hashlib
 import os
 import random
+from oat_evaluation.attacks.attack import Attack
+from oat_evaluation.llms.api_llm import ApiLLM
 from oat_evaluation.utils import dataset_to_list, load_config_and_set_vars, print_mem_usage, print_timey
 load_config_and_set_vars() # needs to be at top to take effect
 
@@ -37,6 +39,8 @@ def run_main():
                       help='Name of the group to run the evaluation in (default: "")')
     parser.add_argument('--num_harmful_test_samples', type=int, default=100,
                       help='Number of harmful test samples to use (default: 100)')
+    parser.add_argument('--dont_perform_obfuscation', type=bool, default=False,
+                      help='Whether to ignore probe during all attacks (default: False)')
     args = parser.parse_args()
 
     MINI_MODE = False
@@ -52,7 +56,12 @@ def run_main():
 
     print(f"Loaded {len(harmless)} harmless examples. First one: {harmless[0]}")
 
-    num_steps_soft_attack_standard = 150 if not MINI_MODE else 8
+    num_steps_soft_attack_standard = 75 if not MINI_MODE else 8
+    remote_attacker_llm = ApiLLM(model_name = "gpt-4.1", 
+                           base_url = "https://api.openai.com/v1",
+                           api_key_env_var="OPENAI_API_KEY",
+                           )
+
     attacks_to_evaluate = [
         #lambda: PerturbationAttack(num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
         #lambda: PerturbationAttack(num_epochs=1, learning_rate=2e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
@@ -64,18 +73,7 @@ def run_main():
         # lambda: SoftSuffixAttack(suffix_length=1, num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=75),
         # lambda: SoftSuffixAttack(suffix_length=1, num_epochs=1, learning_rate=4e-2, batch_size=8, chunk_size=8, max_steps=75),
 
-        #lambda: SoftSuffixAttack(suffix_length=4, num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
-        #lambda: SoftSuffixAttack(suffix_length=16, num_epochs=1, learning_rate=4e-2, batch_size=4, chunk_size=4, max_steps=num_steps_soft_attack_standard),
-        
         # PAIR attacks
-        lambda: PAIRAttack(
-            n_concurrent_jailbreaks=1,
-            max_num_iterations=2,
-            keep_last_n_in_convs=4,
-            max_json_attempts=1,
-            max_new_attack_tokens=256,
-            max_new_victim_tokens=256,
-        ),
         lambda: PAIRAttack(
             n_concurrent_jailbreaks=2,
             max_num_iterations=2,
@@ -83,7 +81,25 @@ def run_main():
             max_json_attempts=1,
             max_new_attack_tokens=256,
             max_new_victim_tokens=256,
+            attack_llm=remote_attacker_llm,
+            judge_llm=remote_attacker_llm,
         ),
+        lambda: PAIRAttack(
+            n_concurrent_jailbreaks=2,
+            max_num_iterations=8,
+            keep_last_n_in_convs=4,
+            max_json_attempts=2,
+            max_new_attack_tokens=256,
+            max_new_victim_tokens=256,
+            attack_llm=remote_attacker_llm,
+            judge_llm=remote_attacker_llm,
+        ),
+
+        # lambda: SoftSuffixAttack(suffix_length=1, num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
+        # lambda: SoftSuffixAttack(suffix_length=4, num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
+        # lambda: SoftSuffixAttack(suffix_length=16, num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
+        
+        # lambda: PerturbationAttack(num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
     ]
     
     MODEL_DEBUG_MODE = False
@@ -91,7 +107,7 @@ def run_main():
     DO_NON_ATTACKED_EVAL = False
 
     # Initialize probe and model
-    OAT_OR_BASE = "llama_base"  # options: "abhayllama", "llama_base", "gemma_oat_mlp", "gemma_oat_linear", "gemma_base", "latllama"
+    # OAT_OR_BASE = "llama_base"  # options: "abhayllama", "llama_base", "gemma_oat_mlp", "gemma_oat_linear", "gemma_base", "latllama"
 
     config = load_config_and_set_vars()
     probes = config["PROBE_PATHS"]
@@ -124,7 +140,7 @@ def run_main():
             else:
                 llm = AutoLLM(model_details["path"], dtype=MODEL_DTYPE, debug_mode=MODEL_DEBUG_MODE)
         except Exception as e:
-            print(f"Error loading model {OAT_OR_BASE}: {e}")
+            print(f"Error loading model/probe {probe_details['model_name']}: {e}")
             print(traceback.format_exc())
             continue
         
@@ -140,13 +156,24 @@ def run_main():
         #for max_steps in [32, 64, 128, 256, 512]:
         for ai in range(len(attacks_to_evaluate)):
             attack_id = hashlib.sha256(f"{ai}{time_lib.time()}{random.randint(0, 1000000)}{process_id}".encode()).hexdigest()
+            is_slow = False
             for seed_num in seeds:
+                if seed_num > 0 and is_slow:
+                    print(f"Skipping slow attack (attack idx {ai}) for seed {seed_num} because it's already been run for seed 0")
+                    continue
+
                 # Instantiate attack
-                attack = attacks_to_evaluate[ai]()
+                attack: Attack = attacks_to_evaluate[ai]()
+
+                is_slow = is_slow or attack.is_slow
+                if is_slow:
+                    num_test_samples_override = num_harmful_test_samples // 2
+                else:
+                    num_test_samples_override = num_harmful_test_samples
 
                 # Initialize wandb
                 timenow = datetime.now().strftime("%Y%m%d_%H%M%S")
-                run_name = f"{OAT_OR_BASE}_{ai}_{attack.name}_seed{seed_num}_{timenow}"
+                run_name = f"{pn}_{ai}_{attack.name}_seed{seed_num}_{timenow}"
                  
                 wandb.init(
                      project=WANDB_PROJECT,
@@ -155,7 +182,6 @@ def run_main():
                      group=args.group_name if args.group_name else process_id, # Group evals within a single process
                      config={
                          # TODO: alter to acquire from attack automatically
-                         "model_type": OAT_OR_BASE,
                          "attack_name": attack.name,
                          "attack_str": str(attack),
                          # attack_params are important: they're used to identify identical attacks across runs
@@ -177,7 +203,8 @@ def run_main():
                              "max_new_victim_tokens": attack.max_new_victim_tokens if isinstance(attack, PAIRAttack) else None,
                              # Common parameters
                              "num_harmful_train_samples": num_harmful_train_samples,
-                             "num_harmful_test_samples": num_harmful_test_samples,
+                             "num_harmful_test_samples": num_test_samples_override,
+                             "performing_obfuscation": (not args.dont_perform_obfuscation) and attack.can_perform_obfuscation,
                          },
                          "seed": seed_num,
                          "model_dtype": str(MODEL_DTYPE),
@@ -201,7 +228,8 @@ def run_main():
 
                 try:
                     run_universal_eval(attack=attack, llm=llm, harmful=harmful, harmless_probe_scores=harmless_probe_scores, probe=probe, do_non_attacked_eval=DO_NON_ATTACKED_EVAL,
-                                    callback_steps=callback_steps, seed=seed_num, num_harmful_test_samples=num_harmful_test_samples, num_harmful_train_samples=num_harmful_train_samples)
+                                    callback_steps=callback_steps, seed=seed_num, num_harmful_test_samples=num_test_samples_override, num_harmful_train_samples=num_harmful_train_samples,
+                                    dont_perform_obfuscation=args.dont_perform_obfuscation)
                 except Exception as e:
                     print(f"Error running attack: {e}")
                     print(traceback.format_exc())

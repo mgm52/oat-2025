@@ -17,6 +17,7 @@ from datasets import load_dataset
 from scipy import stats
 
 from oat_evaluation.harm_grading.strongreject import StrongRejectGrader
+from oat_evaluation.harm_grading.batched_sr import AsyncStrongRejectGrader
 from oat_evaluation.attacks.soft_suffix import SoftSuffixAttack
 from oat_evaluation.llms.autollm import AutoLLM
 from oat_evaluation.llms.autopeft import AutoPEFT
@@ -33,7 +34,8 @@ def strongreject_evaluate(
     """
     Compute strongreject results and adjusted scores with probe.
     """
-    sr_grader = StrongRejectGrader()
+    #sr_grader = StrongRejectGrader()
+    sr_grader = AsyncStrongRejectGrader(max_concurrent_calls=256)
     results = sr_grader.grade_harm(prompts, responses)
     
     sr_scores = [m["score"] for m in results.other_metrics]
@@ -272,15 +274,17 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
         metrics_to_log["eval/ci_avg_sr_probe_attacked_upper"] = a_adjusted_ci[1]
         metrics_to_log["eval/ci_refusal_probe_attacked_lower"] = a_adjusted_refusal_ci[0]
         metrics_to_log["eval/ci_refusal_probe_attacked_upper"] = a_adjusted_refusal_ci[1]
+
+        metrics_to_log["eval/current_attack_step"] = current_attack_step
         
-        if current_attack_step is not None:
-            wandb.log(metrics_to_log, step=current_attack_step)
-        else: # For final evaluation if step is not part of final_attack_details
-            wandb.log(metrics_to_log)
+        #if current_attack_step is not None:
+        #    wandb.log(metrics_to_log, step=current_attack_step)
+        #else: # For final evaluation if step is not part of final_attack_details
+        wandb.log(metrics_to_log)
 
 
 def run_universal_eval(attack: Attack, llm: LLM, harmful: List[Dict], harmless_probe_scores: List[float], 
-         probe=None, do_non_attacked_eval=False, callback_steps=[20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300], seed=42, num_harmful_test_samples=100, num_harmful_train_samples=1000):
+         probe=None, do_non_attacked_eval=False, callback_steps=[20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300], seed=42, num_harmful_test_samples=100, num_harmful_train_samples=1000, dont_perform_obfuscation=False):
     with torch.no_grad():
         
         print(f"Formatting prompts and responses... (Taking first {num_harmful_test_samples} for test set, and next {num_harmful_train_samples} for train set)")
@@ -339,6 +343,10 @@ def run_universal_eval(attack: Attack, llm: LLM, harmful: List[Dict], harmless_p
     # Train attack on remaining harmful data
     print("\n=== ATTACK TRAINING ===")
     print_mem_usage()
+    if dont_perform_obfuscation:
+        print_timey("We wont perform obfuscation, because dont_perform_obfuscation is True")
+    else:
+        print_timey("We will perform obfuscation")
     
     if hasattr(llm, "_model") and attack.box_requirement == BoxRequirement.WHITE_BOX:
         llm._model.train()
@@ -365,7 +373,8 @@ def run_universal_eval(attack: Attack, llm: LLM, harmful: List[Dict], harmless_p
         llm=llm,
         prompts=prompts_for_attack_run,
         harmful_responses=responses_for_attack_run,
-        probe_to_obfuscate=probe, # PAIR uses this to filter its own outputs if logic is active
+        probe_to_obfuscate=probe if not dont_perform_obfuscation else None,
+        probe_refusal_threshold=fpr_threshold if not dont_perform_obfuscation else None,
         generate_final_responses=False, # Crucial: framework expects attack details, not direct responses here
         callback_steps=callback_steps, 
         callbacks=evaluation_callbacks 
