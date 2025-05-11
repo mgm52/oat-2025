@@ -31,13 +31,14 @@ def flop_to_usd(flop: float) -> float:
 
 @dataclass
 class AttackDetails:
-    equivalent_flop_cost: Optional[int] = 0  # Obtained by converting the dollars to FLOPs too, corresponds to num_dollars_cost
+    flop_cost: Optional[int] = 0
     generated_str_prompts: Optional[List[str]] = None
     generated_embedding_prompts: Optional[List[torch.Tensor]] = None
     generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None
     generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
     
-    equivalent_usd_cost: Optional[float] = 0.  # Obtained by converting the FLOPs to dollars too, corresponds to flop_cost
+    equivalent_flop_cost: Optional[int] = 0  # Obtained by converting the dollars to FLOPs too, corresponds to equivalent_usd_cost
+    equivalent_usd_cost: Optional[float] = 0.  # Obtained by converting the FLOPs to dollars too, corresponds to equivalent_flop_cost
     local_flop_cost: Optional[int] = 0
     api_usd_cost: Optional[float] = 0.
     
@@ -45,15 +46,13 @@ class AttackDetails:
     num_total_tokens: Optional[int] = 0
     num_api_calls: Optional[int] = 0
     
-    @property
-    def flop_cost(self) -> Optional[int]:
-        return self.equivalent_flop_cost
     steps_trained: Optional[int] = None
-
+    
     def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
         if not isinstance(other, AttackDetails):
             raise NotImplementedError(f"Expected type AttackDetails, got type {type(other)}")
-        return AttackDetails(equivalent_flop_cost=(self.equivalent_flop_cost or 0) + (other.equivalent_flop_cost or 0),
+        return AttackDetails(flop_cost=self.flop_cost + other.flop_cost,
+                             equivalent_flop_cost=(self.equivalent_flop_cost or 0) + (other.equivalent_flop_cost or 0),
                              generated_str_prompts=(self.generated_str_prompts or []) + (other.generated_str_prompts or []),
                              generated_embedding_prompts=(self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
                              generated_embedding_attack_function=(self.generated_embedding_attack_function or other.generated_embedding_attack_function),
