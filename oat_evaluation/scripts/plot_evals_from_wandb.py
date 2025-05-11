@@ -13,6 +13,7 @@ from scipy.stats import bootstrap # For BCa confidence intervals
 # Replace with your W&B entity (username or team) and project name
 DEFAULT_WANDB_ENTITY = "mgm52"  # e.g., "my_username" or "my_team"
 DEFAULT_WANDB_PROJECT = "oat_evaluation"
+DEFAULT_GROUP_NAMES = "20250511_043048_3142425_big_eval_repaired" #"20250510_161748,20250510_161752,20250510_161754"
 BASE_SAVE_DIR = "oat_evaluation/eval_plots"
 
 # Metrics to fetch and plot
@@ -108,7 +109,7 @@ def fetch_and_process_wandb_data(entity, project, group_names):
         return {}, {}
         
     print(f"Found {len(runs_to_process)} runs across {len(group_names)} group(s) to process.")
-    history_keys_to_fetch = ["_step"] + list(METRIC_MAP.values())
+    history_keys_to_fetch = ["eval/current_attack_step"] + list(METRIC_MAP.values())
 
     # Temporary dict to count unique seeds per (attack_config, model_probe)
     # to avoid double counting if a run appears in multiple fetched groups (though unlikely with group filter)
@@ -135,7 +136,7 @@ def fetch_and_process_wandb_data(entity, project, group_names):
 
         try:
             # Fetch all history for keys at once
-            history_df = run.history(keys=history_keys_to_fetch, pandas=True, samples=run.summary.get("_step", 500) + 50) # Fetch more samples if many steps
+            history_df = run.history(keys=history_keys_to_fetch, pandas=True, samples=run.summary.get("eval/current_attack_step", 500) + 50) # Fetch more samples if many steps
             if history_df.empty:
                 print(f"  Warning: Run {run.id} has empty history for requested keys. Skipping.")
                 continue
@@ -144,8 +145,8 @@ def fetch_and_process_wandb_data(entity, project, group_names):
             continue
 
         for _, row in history_df.iterrows():
-            step = row.get("_step")
-            if pd.isna(step): # Skip rows where _step is NaN
+            step = row.get("eval/current_attack_step")
+            if pd.isna(step): # Skip rows where step is NaN
                 continue
             step = int(step) # Ensure step is an integer
             
@@ -201,8 +202,6 @@ def fetch_and_process_wandb_data(entity, project, group_names):
                         
     return processed_data, seed_counts
 
-
-# --- Plotting Function ---
 
 # --- Plotting Function ---
 
@@ -298,7 +297,8 @@ def plot_results(processed_data, seed_counts, group_names_list):
                 model_name_str, probe_name_str = model_probe_key
                 line_label = f"{model_name_str}"
                 if probe_name_str and probe_name_str.lower() != "unknownprobe" and probe_name_str.lower() != "none":
-                     line_label += f", Probe: {probe_name_str}"
+                     #line_label += f", Probe: {probe_name_str}"
+                     line_label = probe_name_str
                 
                 if wandb_metric_key in metric_specific_results:
                     steps, means, ci_lowers, ci_uppers = metric_specific_results[wandb_metric_key]
@@ -376,7 +376,6 @@ if __name__ == "__main__":
     
     # Example group names: "20240101_my_experiment_gcm,20240102_another_run_gcm"
     # For testing with dummy data, ensure your W&B project has runs in these groups
-    DEFAULT_GROUP_NAMES = "20250510_203803_1392405_ci_test" #"20250510_161748,20250510_161752,20250510_161754"
     group_names_str = input(f"Enter W&B group names (comma-separated) (default: '{DEFAULT_GROUP_NAMES}'): ").strip()
     if not group_names_str:
         group_names_str = DEFAULT_GROUP_NAMES
