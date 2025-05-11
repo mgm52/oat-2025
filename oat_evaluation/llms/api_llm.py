@@ -11,6 +11,7 @@ import anthropic
 from groq import Groq
 import instructor
 import tiktoken
+from oat_evaluation.llms.metrics import LLMMetricsTracker
 
 class ApiFormat(Enum):
     OPENAI = "openai"
@@ -214,6 +215,11 @@ class ApiLLM(LLM):
                         text_format=structured_output_type,
                         temperature=temperature
                     )
+                    # Track metrics
+                    num_input_tokens = self.get_num_tokens_in_chat(prompts)
+                    num_output_tokens = self.get_num_tokens_in_string(response.output_parsed.model_dump_json())
+                    LLMMetricsTracker.update_metrics(self, num_input_tokens, num_output_tokens)
+                    
                     return LLMResponses(
                         responses_strings=[response.output_parsed.model_dump_json()],
                         responses_logits=None,
@@ -228,6 +234,11 @@ class ApiLLM(LLM):
                         max_completion_tokens=max_new_tokens,
                         stream=False
                     )
+                    # Track metrics
+                    num_input_tokens = self.get_num_tokens_in_chat(prompts)
+                    num_output_tokens = self.get_num_tokens_in_string(response.model_dump_json())
+                    LLMMetricsTracker.update_metrics(self, num_input_tokens, num_output_tokens)
+                    
                     return LLMResponses(
                         responses_strings=[response.model_dump_json()],
                         responses_logits=None,
@@ -242,6 +253,12 @@ class ApiLLM(LLM):
                     )
                     content = response.content[0].text
                     structured_output = structured_output_type.model_validate_json(content)
+                    
+                    # Track metrics
+                    num_input_tokens = self.get_num_tokens_in_chat(prompts)
+                    num_output_tokens = self.get_num_tokens_in_string(content)
+                    LLMMetricsTracker.update_metrics(self, num_input_tokens, num_output_tokens)
+                    
                     return LLMResponses(
                         responses_strings=[structured_output.model_dump_json()],
                         responses_logits=None,
@@ -275,6 +292,11 @@ class ApiLLM(LLM):
                         temperature=temperature
                     )
                     content = response.content[0].text
+                
+                # Track metrics
+                num_input_tokens = self.get_num_tokens_in_chat(prompts)
+                num_output_tokens = self.get_num_tokens_in_string(content)
+                LLMMetricsTracker.update_metrics(self, num_input_tokens, num_output_tokens)
                 
                 # Validate and convert to JSON string
                 structured_output = structured_output_type.model_validate_json(content)
@@ -321,6 +343,11 @@ class ApiLLM(LLM):
                     temperature=temperature
                 )
                 responses.append(response.content[0].text)
+            
+            # Track metrics for each response
+            num_input_tokens = self.get_num_tokens_in_chat([messages])
+            num_output_tokens = self.get_num_tokens_in_string(responses[-1])
+            LLMMetricsTracker.update_metrics(self, num_input_tokens, num_output_tokens)
             
         return LLMResponses(
             responses_strings=responses,

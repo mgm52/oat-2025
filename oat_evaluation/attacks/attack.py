@@ -31,29 +31,38 @@ def flop_to_usd(flop: float) -> float:
 
 @dataclass
 class AttackDetails:
-    flop_cost: Optional[int] = 0  # Obtained by converting the dollars to FLOPs too, corresponds to num_dollars_cost
+    equivalent_flop_cost: Optional[int] = 0  # Obtained by converting the dollars to FLOPs too, corresponds to num_dollars_cost
     generated_str_prompts: Optional[List[str]] = None
     generated_embedding_prompts: Optional[List[torch.Tensor]] = None
     generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None
     generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
-    num_input_tokens: Optional[int] = 0
-    num_output_tokens: Optional[int] = 0
-    usd_cost: Optional[float] = 0.  # Obtained by converting the FLOPs to dollars too, corresponds to flop_cost
     
-    partial_flop_cost: Optional[int] = 0
-    partial_usd_cost: Optional[float] = 0.
+    equivalent_usd_cost: Optional[float] = 0.  # Obtained by converting the FLOPs to dollars too, corresponds to flop_cost
+    local_flop_cost: Optional[int] = 0
+    api_usd_cost: Optional[float] = 0.
+    
+    used_api_llm: bool = False  # Whether API calls were used
+    num_total_tokens: Optional[int] = 0
+    num_api_calls: Optional[int] = 0
+    
+    @property
+    def flop_cost(self) -> Optional[int]:
+        return self.equivalent_flop_cost
 
     def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
         if not isinstance(other, AttackDetails):
             raise NotImplementedError(f"Expected type AttackDetails, got type {type(other)}")
-        return AttackDetails((self.flop_cost or 0) + (other.flop_cost or 0),
-                             (self.generated_str_prompts or []) + (other.generated_str_prompts or []),
-                             (self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
-                             (self.generated_embedding_attack_function or other.generated_embedding_attack_function),
-                             (self.generated_str_attack_function or other.generated_str_attack_function),
-                             usd_cost=(self.usd_cost or 0.) + (other.usd_cost or 0.),
-                             partial_flop_cost=(self.partial_flop_cost or 0) + (other.partial_flop_cost or 0),
-                             partial_usd_cost=(self.partial_usd_cost or 0.) + (other.partial_usd_cost or 0.),
+        return AttackDetails(equivalent_flop_cost=(self.equivalent_flop_cost or 0) + (other.equivalent_flop_cost or 0),
+                             generated_str_prompts=(self.generated_str_prompts or []) + (other.generated_str_prompts or []),
+                             generated_embedding_prompts=(self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
+                             generated_embedding_attack_function=(self.generated_embedding_attack_function or other.generated_embedding_attack_function),
+                             generated_str_attack_function=(self.generated_str_attack_function or other.generated_str_attack_function),
+                             equivalent_usd_cost=(self.equivalent_usd_cost or 0.) + (other.equivalent_usd_cost or 0.),
+                             local_flop_cost=(self.local_flop_cost or 0) + (other.local_flop_cost or 0),
+                             api_usd_cost=(self.api_usd_cost or 0.) + (other.api_usd_cost or 0.),
+                             used_api_llm=self.used_api_llm or other.used_api_llm,
+                             num_total_tokens=self.num_total_tokens + other.num_total_tokens,
+                             num_api_calls=self.num_api_calls + other.num_api_calls,
         )
 
 
