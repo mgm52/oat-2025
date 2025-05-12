@@ -1,17 +1,108 @@
 PROBE_PATHS:
-  # Downloaded from huggingface...
-  gemma_2_9b_oat_linear: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/linear_probes_step_2048.pt"
-  gemma_2_9b_oat_mlp: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/nonlinear_probes_step_2048.pt"
-  llama_3_8b_oat_linear: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/abhayllama_probes.pt"
-  llama_3_8b_linear: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/base_llama_1024_linear.pt"
-  llama_3_8b_lat_linear: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/latprobes_step_1024.pt"
+  gemma_2_9b_oat_linear:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/gemma_linear_probes_step_1024.pt"
+    flops: 0
+    model_name: "gemma_2_9b_oat_linear"
+  gemma_2_9b_oat_mlp:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/gemma_nonlinear_probes_step_1024.pt"
+    flops: 0
+    model_name: "gemma_2_9b_oat_mlp"
+
+  # Abhay's OAT
+  llama_3_8b_oat_linear:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/abhayllama_probes_1024.pt"
+    flops: 0 # 0 because it's included in model flop cost
+    model_name: "llama_3_8b_oat_linear"
+  # Our OAT, identically trained
+  llama_3_8b_oat_linear_recreation:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/oat_training/oat_training_results/Meta-Llama-3-8B-Instruct_20250509_152339_2048_steps_regular_809662675887/probes_step_1024.pt"
+    flops: 0 # 0 because it's included in model flop cost
+    model_name: "llama_3_8b_oat_linear_recreation"
+
+  # Some of our OAT varients
+  llama_3_8b_oat_linear_lowpgd:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/oat_training/oat_training_results/Meta-Llama-3-8B-Instruct_20250509_152339_2048_steps_16pgd_224467209436/probes_step_1024.pt"
+    flops: 0 # 0 because it's included in model flop cost
+    model_name: "llama_3_8b_oat_linear_lowpgd"
+  llama_3_8b_oat_linear_highpgd:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/oat_training/oat_training_results/Meta-Llama-3-8B-Instruct_20250509_152339_2048_steps_64pgd_233964864070/probes_step_1024.pt"
+    flops: 0 # 0 because it's included in model flop cost
+    model_name: "llama_3_8b_oat_linear_highpgd"
+
+  llama_3_8b_linear:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/base_llama_1024_linear.pt"
+    flops: 6755399441055744
+    model_name: "llama"
+
+  # LAT
+  llama_3_8b_lat_linear:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/checkpoints/probes/latprobes_step_1024.pt"
+    flops: 6755399441055744
+    model_name: "llama_3_8b_lat"
+ 
+  # Circuit Breakers (varying LR)
+  llama_3_8b_cb_linear_lowlr:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/oat_training/oat_training_results/Llama-3-8B-Instruct-RR_20250508_233419_1024_steps/probes_step_1024.pt"
+    flops: 6755399441055744
+    model_name: "llama_3_8b_cb"
+  llama_3_8b_cb_linear_highlr:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/oat_training/oat_training_results/Llama-3-8B-Instruct-RR_20250508_233420_1024_steps/probes_step_1024.pt"
+    flops: 6755399441055744
+    model_name: "llama_3_8b_cb"
+  llama_3_8b_cb_linear_midlr:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/oat_training/oat_training_results/Llama-3-8B-Instruct-RR_20250508_233420_1024_steps/probes_step_1024.pt"
+    flops: 6755399441055744
+    model_name: "llama_3_8b_cb"
+
 MODEL_PATHS:
-  gemma_2_9b_oat_linear: "oat-workers/oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/lora_model_step_2048"
-  gemma_2_9b_oat_mlp: "oat-workers/oat-gemma-apr2-checks/gemma2_lora_oat_generation_nonlinear/lora_model_step_2048"
-  llama_3_8b_oat_linear: "Mechanistic-Anomaly-Detection/llama3-oat-generation-linear"
-  llama_3_8b_lat: "LLM-LAT/robust-llama3-8b-instruct"
-  gemma: "google/gemma-2-9b-it"
-  llama: "meta-llama/Meta-Llama-3-8B-Instruct" 
+  gemma_2_9b_oat_linear:
+    path: "oat-workers/oat-gemma-apr2-checks/gemma2_lora_oat_generation_linear/lora_model_step_2048"
+    flops: 0
+    peft: True
+    base_model_name: "gemma"
+  gemma_2_9b_oat_mlp:
+    path: "oat-workers/oat-gemma-apr2-checks/gemma2_lora_oat_generation_nonlinear/lora_model_step_2048"
+    flops: 0
+    peft: True
+    base_model_name: "gemma"
+  llama_3_8b_oat_linear:
+    path: "Mechanistic-Anomaly-Detection/llama3-oat-generation-linear"
+    flops: 92323792361095168
+    peft: True
+    base_model_name: "llama"
+  llama_3_8b_oat_linear_recreation:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/oat_training/oat_training_results/Meta-Llama-3-8B-Instruct_20250509_152339_2048_steps_regular_809662675887/lora_model_step_2048"
+    flops: 92323792361095168
+    peft: True
+    base_model_name: "llama"
+  llama_3_8b_oat_linear_lowpgd:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/oat_training/oat_training_results/Meta-Llama-3-8B-Instruct_20250509_152339_2048_steps_16pgd_224467209436/lora_model_step_2048"
+    flops: 56294995342131200
+    peft: True
+    base_model_name: "llama"
+  llama_3_8b_oat_linear_highpgd:
+    path: "/workspace/GIT_SHENANIGANS/oat-2025/oat_training/oat_training_results/Meta-Llama-3-8B-Instruct_20250509_152339_2048_steps_64pgd_233964864070/lora_model_step_2048"
+    flops: 164381386399023104
+    peft: True
+    base_model_name: "llama"
+  llama_3_8b_lat:
+    path: "/workspace/lat-llama"
+    flops: 0 # TODO: estimate or get from authors
+    peft: False
+  llama_3_8b_cb:
+    path: "GraySwanAI/Llama-3-8B-Instruct-RR"
+    flops: 0 # TODO: estimate or get from authors
+    peft: False
+  gemma:
+    path: "google/gemma-2-9b-it"
+    flops: 0
+    peft: False
+  llama:
+    path: "meta-llama/Meta-Llama-3-8B-Instruct"
+    flops: 0
+    peft: False
+  
 HF_HOME: "/workspace/.cache/huggingface" # Defaults to "~/.cache/huggingface"... But /workspace/ is runpod's network volume
-# HF_TOKEN: "hf_<INSERT_HERE>"
-# OPENAI_API_KEY: "sk-proj-<INSERT-HERE>"
+WANDB_API_KEY: "00000000"
+HF_TOKEN: "hf_<INSERT_HERE>"
+OPENAI_API_KEY: "sk-proj-<INSERT-HERE>"
