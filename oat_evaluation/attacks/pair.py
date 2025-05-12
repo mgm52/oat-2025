@@ -99,7 +99,7 @@ class PAIRAttack(Attack):
                     if attempt < self.max_cuda_oom_retries - 1:
                         print(f"Previously {self.n_concurrent_jailbreaks=}")
                         self.n_concurrent_jailbreaks = max(1, self.n_concurrent_jailbreaks // 2) # Ensure it's at least 1
-                        print(f"Due to OOM, setting {self.n_concurrent_jailbreaks=}")
+                        print(f"Due to OOM, halving n_concurrent_jailbreaks to {self.n_concurrent_jailbreaks}")
                     else:
                         print("Max retries reached. Skipping.")
                         # Handle failure (e.g., skip or raise)
@@ -223,6 +223,7 @@ Example of a correct response:
                         # Use structured output API if available
                         attacker_outputs = []
                         for conv in convs_subset:
+                            print_timey("PAIR: Generating attacker responses...")
                             try:
                                 response = attack_llm.generate_responses(
                                     prompts=[conv],
@@ -233,20 +234,23 @@ Example of a correct response:
                                 attacker_outputs.append(response.responses_strings[0])
                             except Exception as e:
                                 # Fallback to regular text if structured output fails
-                                logger.warning(f"Structured output failed: {e}. Falling back to regular generation.")
+                                print_timey(f"Structured output failed: {e}. Falling back to regular generation.")
                                 fallback_response = attack_llm.generate_responses(
                                     prompts=[conv], 
                                     max_new_tokens=self.max_new_attack_tokens,
                                     requires_grad=False,
                                 ).responses_strings[0]
                                 attacker_outputs.append(fallback_response)
+                            print_timey("PAIR: Got attacker responses.")
                     else:
                         # Regular text generation
+                        print_timey("PAIR: Generating attacker responses...")
                         attacker_outputs = attack_llm.generate_responses(
                             prompts=convs_subset, 
                             max_new_tokens=self.max_new_attack_tokens, 
                             requires_grad=False,
                         ).responses_strings
+                        print_timey("PAIR: Got attacker responses.")
                     
                     # Check for valid outputs and update the list
                     for i, (conv, full_output) in enumerate(zip(convs_subset, attacker_outputs)):
@@ -261,6 +265,9 @@ Example of a correct response:
                         num_tokens = target_llm.get_num_tokens_in_chat(conv)
                         flop_counter.num_flops += calculate_forward_flops(attack_llm.num_params, num_tokens)
 
+                        if full_output is None:
+                            new_indices_to_regenerate.append(orig_index)
+                            continue
                         attack_dict, json_str = extract_json(full_output)
                         if attack_dict is not None:
                             valid_outputs[orig_index] = attack_dict
@@ -275,11 +282,13 @@ Example of a correct response:
             print(f"Memory after: {memory_after} MB")
             
             # Get responses from target LLM
+            print_timey("PAIR: Generating target responses...")
             llm_output_responses = target_llm.generate_responses(
                 adv_prompt_list,
                 max_new_tokens=self.max_new_victim_tokens,
                 exposed_activations_request=probe_to_obfuscate.activation_extraction_request if probe_to_obfuscate else None
             )
+            print_timey("PAIR: Got target responses.")
             llm_output_list = llm_output_responses.responses_strings
             # FLOPs for target model
             # TODO: Consider if padding was used in generation
@@ -300,7 +309,9 @@ Example of a correct response:
             # Get judge scores
             sys_prompt = get_judge_system_prompt(goal, target_str)
             judge_prompts = [sys_prompt + "\n" + f"[PROMPT]:{attack_prompt}\n[ASSISTANT'S RESPONSE]: {target_response}" for attack_prompt, target_response in zip(adv_prompt_list, llm_output_list)]
+            print_timey("PAIR: Getting judge responses...")
             scores_outputs = judge_llm.generate_responses(judge_prompts).responses_strings
+            print_timey("PAIR: Got judge responses.")
             judge_scores = []
             # FLOPs for judge model, using target LLM to tokenize
             # TODO: Consider if padding was used in generation
