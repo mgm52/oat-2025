@@ -59,17 +59,7 @@ def run_main():
     print(f"Loaded {len(harmless)} harmless examples. First one: {harmless[0]}")
 
     num_steps_soft_attack_standard = 75 if not MINI_MODE else 8
-    remote_attacker_llm_1 = ApiLLM(model_name = "gpt-4.1-mini", 
-                           base_url = "https://api.openai.com/v1",
-                           api_key_env_var="OPENAI_API_KEY",
-                           supports_structured_output=True
-                           )
     remote_attacker_llm_2 = ApiLLM(model_name = "gpt-4o-mini", 
-                           base_url = "https://api.openai.com/v1",
-                           api_key_env_var="OPENAI_API_KEY",
-                           supports_structured_output=True
-                           )
-    remote_attacker_llm_3 = ApiLLM(model_name = "gpt-4.1", 
                            base_url = "https://api.openai.com/v1",
                            api_key_env_var="OPENAI_API_KEY",
                            supports_structured_output=True
@@ -87,64 +77,73 @@ def run_main():
         # lambda: SoftSuffixAttack(suffix_length=1, num_epochs=1, learning_rate=4e-2, batch_size=8, chunk_size=8, max_steps=75),
 
         # PAIR attacks
-        lambda: PAIRAttack(
-            n_concurrent_jailbreaks=1,
-            max_num_iterations=2,
-            keep_last_n_in_convs=2,
-            max_json_attempts=2,
-            max_new_attack_tokens=256,
-            max_new_victim_tokens=256,
-            attack_llm=remote_attacker_llm_1,
-            judge_llm=remote_attacker_llm_1,
-        ),
-        lambda: PAIRAttack(
-            n_concurrent_jailbreaks=1,
-            max_num_iterations=2,
-            keep_last_n_in_convs=2,
-            max_json_attempts=2,
-            max_new_attack_tokens=256,
-            max_new_victim_tokens=256,
-            attack_llm=remote_attacker_llm_2,
-            judge_llm=remote_attacker_llm_2,
-        ),
-        lambda: PAIRAttack(
-            n_concurrent_jailbreaks=1,
-            max_num_iterations=2,
-            keep_last_n_in_convs=2,
-            max_json_attempts=2,
-            max_new_attack_tokens=256,
-            max_new_victim_tokens=256,
-            attack_llm=remote_attacker_llm_3,
-            judge_llm=remote_attacker_llm_3,
-        ),
+        # lambda: PAIRAttack(
+        #     n_concurrent_jailbreaks=1,
+        #     max_num_iterations=2,
+        #     keep_last_n_in_convs=2,
+        #     max_json_attempts=2,
+        #     max_new_attack_tokens=256,
+        #     max_new_victim_tokens=256,
+        #     attack_llm=remote_attacker_llm_2,
+        #     judge_llm=remote_attacker_llm_2,
+        # ),
+        # lambda: PAIRAttack(
+        #     n_concurrent_jailbreaks=1,
+        #     max_num_iterations=3,
+        #     keep_last_n_in_convs=3,
+        #     max_json_attempts=2,
+        #     max_new_attack_tokens=256,
+        #     max_new_victim_tokens=256,
+        #     attack_llm=remote_attacker_llm_2,
+        #     judge_llm=remote_attacker_llm_2,
+        # ),
+        # lambda: PAIRAttack(
+        #     n_concurrent_jailbreaks=1,
+        #     max_num_iterations=4,
+        #     keep_last_n_in_convs=4,
+        #     max_json_attempts=2,
+        #     max_new_attack_tokens=256,
+        #     max_new_victim_tokens=256,
+        #     attack_llm=remote_attacker_llm_2,
+        #     judge_llm=remote_attacker_llm_2,
+        # ),
 
-        # GCG attacks
-        lambda: GCGAttack(
-            num_steps=100,
-            batch_size=32,
-            topk=128,
-            use_probe_sampling=True,
-        ),
-        lambda: GCGAttack(
-            num_steps=200,
-            batch_size=64,
-            topk=256,
-            use_probe_sampling=True,
-        ),
+        # lambda: GCGAttack(
+        #     num_steps=10,
+        #     use_probe_sampling=True,
+        # ),
 
-        # FLRT attacks
-        lambda: FLRTAttack(
-            num_steps=200,
-            k1=10,
-            k2=30,
-            init_len=10,
-        ),
-        lambda: FLRTAttack(
-            num_steps=400,
-            k1=20,
-            k2=60,
-            init_len=15,
-        ),
+        # lambda: FLRTAttack(
+        #     num_steps=10
+        # ),
+
+        # # GCG attacks
+        # lambda: GCGAttack(
+        #     num_steps=100,
+        #     batch_size=32,
+        #     topk=128,
+        #     use_probe_sampling=True,
+        # ),
+        # lambda: GCGAttack(
+        #     num_steps=200,
+        #     batch_size=64,
+        #     topk=256,
+        #     use_probe_sampling=True,
+        # ),
+
+        # # FLRT attacks
+        # lambda: FLRTAttack(
+        #     num_steps=200,
+        #     k1=10,
+        #     k2=30,
+        #     init_len=10,
+        # ),
+        # lambda: FLRTAttack(
+        #     num_steps=400,
+        #     k1=20,
+        #     k2=60,
+        #     init_len=15,
+        # ),
 
         # lambda: PAIRAttack(
         #     n_concurrent_jailbreaks=1,
@@ -157,11 +156,11 @@ def run_main():
         #     judge_llm=remote_attacker_llm_1,
         # ),
 
-        # lambda: SoftSuffixAttack(suffix_length=1, num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
-        # lambda: SoftSuffixAttack(suffix_length=4, num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
-        # lambda: SoftSuffixAttack(suffix_length=16, num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
+        lambda: SoftSuffixAttack(suffix_length=1, num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
+        lambda: SoftSuffixAttack(suffix_length=4, num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
+        lambda: SoftSuffixAttack(suffix_length=16, num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
         
-        # lambda: PerturbationAttack(num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
+        lambda: PerturbationAttack(num_epochs=1, learning_rate=3e-2, batch_size=8, chunk_size=8, max_steps=num_steps_soft_attack_standard),
     ]
     
     MODEL_DEBUG_MODE = False
@@ -229,6 +228,7 @@ def run_main():
 
                 is_slow = is_slow or attack.is_slow
                 if is_slow:
+                    # Sequential PAIR takes about 1h per 128 samples...
                     num_test_samples_override = num_harmful_test_samples // 2
                 else:
                     num_test_samples_override = num_harmful_test_samples
@@ -263,6 +263,8 @@ def run_main():
                              "max_json_attempts": attack.max_json_attempts if isinstance(attack, PAIRAttack) else None,
                              "max_new_attack_tokens": attack.max_new_attack_tokens if isinstance(attack, PAIRAttack) else None,
                              "max_new_victim_tokens": attack.max_new_victim_tokens if isinstance(attack, PAIRAttack) else None,
+                             "attack_llm": attack.attack_llm if isinstance(attack, PAIRAttack) else None,
+                             "judge_llm": attack.judge_llm if isinstance(attack, PAIRAttack) else None,
                              # GCG parameters
                              "gcg_num_steps": attack.num_steps if isinstance(attack, GCGAttack) else None,
                              "gcg_optim_str_init": attack.optim_str_init if isinstance(attack, GCGAttack) else None,
@@ -293,6 +295,7 @@ def run_main():
                          "do_non_attacked_eval": DO_NON_ATTACKED_EVAL,
                          "defender_flop_cost": model_details["flops"] + probe_details["flops"],
                          "attack_id": attack_id,
+                         "attack_index": ai,
                      },
                      reinit=True # Allow re-initialization in loops
                 )
