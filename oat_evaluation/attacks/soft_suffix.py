@@ -56,6 +56,10 @@ class SoftSuffixAttack(Attack):
             scale = (row_norms / epsilon).clamp(min=1.0)
             suffix.div_(scale)  # divides each row by scale if norm > epsilon
 
+    @property
+    def is_slow(self) -> bool:
+        return False
+
     def run_attack(
         self,
         llm: LLM,
@@ -342,17 +346,18 @@ class SoftSuffixAttack(Attack):
                     attack_details = AttackDetails(
                         flop_cost=flop_count,
                         generated_embedding_prompts=apply_suffix(prompt_embeddings, suffix),
-                        generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix)
+                        generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix),
+                        steps_trained=total_steps
                     )
                     for callback in callbacks:
                         print_timey(f"Executing callback {callback.__name__} for step {total_steps}...")
                         callback(attack_details)
 
-                if (total_steps) % 128 == 0:
-                    print(f"total_steps % 128 == 0! Decreasing LR by 25% (from {self.learning_rate} to {self.learning_rate * 0.75:.4f})")
-                    self.learning_rate *= 0.75
-                    for param_group in optimizer.param_groups:
-                        param_group['lr'] *= 0.75  # halve the learning rate
+                # if (total_steps) % 128 == 0:
+                #     print(f"total_steps % 128 == 0! Decreasing LR by 25% (from {self.learning_rate} to {self.learning_rate * 0.75:.4f})")
+                #     self.learning_rate *= 0.75
+                #     for param_group in optimizer.param_groups:
+                #         param_group['lr'] *= 0.75  # halve the learning rate
                 
                 if self.max_steps > 0 and total_steps >= self.max_steps:
                     print(f"Reached max steps ({self.max_steps}). Stopping training.")
@@ -386,7 +391,8 @@ class SoftSuffixAttack(Attack):
         attack_details = AttackDetails(
             flop_cost=flop_count, 
             generated_embedding_prompts=final_prompt_embeddings, 
-            generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix)
+            generated_embedding_attack_function=lambda ps: apply_suffix(ps, suffix),
+            steps_trained=total_steps
         )
         return final_responses, attack_details 
 

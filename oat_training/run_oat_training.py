@@ -136,6 +136,18 @@ def parse_args():
         default=10.0,
         help="KL divergence penalty weight",
     )
+    parser.add_argument(
+        "--nickname",
+        type=str,
+        default="oat",
+        help="Nickname for the run",
+    )
+    parser.add_argument(
+        "--layers",
+        type=str,
+        default="4,8,12,16,20,24",
+        help="Layers to train on",
+    )
     return parser.parse_args()
 
 
@@ -308,10 +320,15 @@ def main():
 
     print(f"Going to attempt to load model from {args.model_path}...")
 
+
     model_path = args.model_path
     model_path_name = model_path.split("/")[-1]
-    probes_folder = f"./oat_training/oat_training_results/{model_path_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.n_steps}_steps/"
+    probes_folder = f"./oat_training/oat_training_results/{model_path_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.n_steps}_steps_{args.nickname}_{random.randint(0, 999999999999)}/"
     
+    # While the folder already exists, we'll append a random number to the folder name
+    while os.path.exists(probes_folder):
+        probes_folder = f"{probes_folder}_{random.randint(0, 999999999999)}/"
+
     masking_type = args.masking_type
     use_lora_probes = not args.no_lora_probes
     name = f"{model_path_name}_lora_oat_{masking_type}_{'nonlinear' if args.probe_type == 'nonlinear' else 'linear'}"
@@ -375,7 +392,7 @@ def main():
         positive_examples=forget_examples_train,
         negative_examples=retain_examples_train,
         create_probe_fn=get_probe_creator(args.probe_type),
-        layers=[4, 8, 12, 16, 20, 24], # Adjust layers based on model if needed
+        layers=[int(layer) for layer in args.layers.split(",")],
         max_length=512,
         n_steps_per_logging=8,
         batch_size=2,

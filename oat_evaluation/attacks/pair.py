@@ -22,7 +22,7 @@ class LLMsNotSetException(Exception): ...
 class PAIRAttack(Attack):
     is_universal: bool = False  # Whether this attack is universal or per-prompt.
     box_requirement: BoxRequirement = BoxRequirement.BLACK_BOX  # Whether this attack is white-box (activations) / black-box (tokens) / gray-box (logits).
-    can_perform_obfuscation: bool = False  # Whether this attack can perform probe-obfuscation.
+    can_perform_obfuscation: bool = True  # Whether this attack can perform probe-obfuscation.
     n_concurrent_jailbreaks: int = 3  # Number of concurrent jailbreaks 
     max_num_iterations: int = 2  # The max number of rounds the attacker can try improving on the prompt (this is multiplied by n_concurrent_jailbreaks)
     keep_last_n_in_convs: int = 16  # For truncating the number of rounds for the attacker to keep within the context length
@@ -59,13 +59,11 @@ class PAIRAttack(Attack):
         Returns:
             Tuple containing LLMResponses and AttackDetails.
         """
-        assert generate_final_responses
-        assert callback_steps is None
-        assert callbacks is None
-        
         # Load attack, target and judge LLMs
         # Fallback on the target/victim LLM if the attack LLM and judge LLM are not set
         # Ensure no gradient updates are done with these LLMs
+        original_prompts = prompts # Store original prompts for lookup table
+
         attack_llm = self.attack_llm or llm
         judge_llm = self.judge_llm or llm
         target_llm = llm
@@ -99,16 +97,48 @@ class PAIRAttack(Attack):
                     print(f"Attempt {attempt + 1} failed: {e}")
                     torch.cuda.empty_cache()
                     if attempt < self.max_cuda_oom_retries - 1:
-                        # Adjust parameters, e.g., halve batch size
                         print(f"Previously {self.n_concurrent_jailbreaks=}")
-                        self.n_concurrent_jailbreaks = self.n_concurrent_jailbreaks // 2
-                        print(f"Due to OOM, setting {self.n_concurrent_jailbreaks=}")
+                        self.n_concurrent_jailbreaks = max(1, self.n_concurrent_jailbreaks // 2) # Ensure it's at least 1
+                        print(f"Due to OOM, halving n_concurrent_jailbreaks to {self.n_concurrent_jailbreaks}")
                     else:
                         print("Max retries reached. Skipping.")
                         # Handle failure (e.g., skip or raise)
                         final_llm_responses += LLMResponses([""], [], [])
                         final_attack_details += AttackDetails(0, prompt, None, None)
-        return final_llm_responses, final_attack_details
+
+                        # Ensure generated_str_prompts has an entry for each original_prompt
+                        if final_attack_details.generated_str_prompts is None:
+                            final_attack_details.generated_str_prompts = []
+                        final_attack_details.generated_str_prompts.append(prompt)
+        
+        # Ensure generated_str_prompts has the same length as original_prompts
+        if final_attack_details.generated_str_prompts is None or \
+           len(final_attack_details.generated_str_prompts) != len(original_prompts):
+            print(f"Warning: Mismatch between original prompts ({len(original_prompts)}) and generated jailbroken prompts ({len(final_attack_details.generated_str_prompts if final_attack_details.generated_str_prompts else 0)}). Using original prompts as fallback for missing ones.")
+            # Fallback: create a list of original prompts if jailbroken ones are missing
+            temp_jailbroken_prompts = final_attack_details.generated_str_prompts or []
+            jailbroken_prompts_for_map = [
+                temp_jailbroken_prompts[i] if i < len(temp_jailbroken_prompts) else original_prompts[i]
+                for i in range(len(original_prompts))
+            ]
+        else:
+            jailbroken_prompts_for_map = final_attack_details.generated_str_prompts
+
+        prompt_to_jailbreak_map = {
+            orig_prompt: jailbroken_prompt 
+            for orig_prompt, jailbroken_prompt in zip(original_prompts, jailbroken_prompts_for_map)
+        }
+
+        def _lookup_attack_function(input_prompts: List[str]) -> List[str]:
+            return [prompt_to_jailbreak_map.get(p, p) for p in input_prompts] # Return original if not found
+
+        final_attack_details.generated_str_attack_function = _lookup_attack_function
+        final_attack_details.steps_trained = len(original_prompts) # Use number of prompts processed as steps
+
+        if generate_final_responses:
+            return final_llm_responses, final_attack_details
+        else:
+            return LLMResponses([], [], []), final_attack_details
 
     def _run_single_attack(self,
                            attack_llm: Optional[LLM],
@@ -193,6 +223,7 @@ Example of a correct response:
                         # Use structured output API if available
                         attacker_outputs = []
                         for conv in convs_subset:
+                            print_timey("PAIR: Generating attacker responses...")
                             try:
                                 response = attack_llm.generate_responses(
                                     prompts=[conv],
@@ -203,20 +234,23 @@ Example of a correct response:
                                 attacker_outputs.append(response.responses_strings[0])
                             except Exception as e:
                                 # Fallback to regular text if structured output fails
-                                logger.warning(f"Structured output failed: {e}. Falling back to regular generation.")
+                                print_timey(f"Structured output failed: {e}. Falling back to regular generation.")
                                 fallback_response = attack_llm.generate_responses(
                                     prompts=[conv], 
                                     max_new_tokens=self.max_new_attack_tokens,
                                     requires_grad=False,
                                 ).responses_strings[0]
                                 attacker_outputs.append(fallback_response)
+                            print_timey("PAIR: Got attacker responses.")
                     else:
                         # Regular text generation
+                        print_timey("PAIR: Generating attacker responses...")
                         attacker_outputs = attack_llm.generate_responses(
                             prompts=convs_subset, 
                             max_new_tokens=self.max_new_attack_tokens, 
                             requires_grad=False,
                         ).responses_strings
+                        print_timey("PAIR: Got attacker responses.")
                     
                     # Check for valid outputs and update the list
                     for i, (conv, full_output) in enumerate(zip(convs_subset, attacker_outputs)):
@@ -231,6 +265,9 @@ Example of a correct response:
                         num_tokens = target_llm.get_num_tokens_in_chat(conv)
                         flop_counter.num_flops += calculate_forward_flops(attack_llm.num_params, num_tokens)
 
+                        if full_output is None:
+                            new_indices_to_regenerate.append(orig_index)
+                            continue
                         attack_dict, json_str = extract_json(full_output)
                         if attack_dict is not None:
                             valid_outputs[orig_index] = attack_dict
@@ -245,7 +282,14 @@ Example of a correct response:
             print(f"Memory after: {memory_after} MB")
             
             # Get responses from target LLM
-            llm_output_list = target_llm.generate_responses(adv_prompt_list, max_new_tokens=self.max_new_victim_tokens).responses_strings
+            print_timey("PAIR: Generating target responses...")
+            llm_output_responses = target_llm.generate_responses(
+                adv_prompt_list,
+                max_new_tokens=self.max_new_victim_tokens,
+                exposed_activations_request=probe_to_obfuscate.activation_extraction_request if probe_to_obfuscate else None
+            )
+            print_timey("PAIR: Got target responses.")
+            llm_output_list = llm_output_responses.responses_strings
             # FLOPs for target model
             # TODO: Consider if padding was used in generation
             num_tokens = sum(target_llm.get_num_tokens_in_str(output) for output in llm_output_list)
@@ -255,16 +299,19 @@ Example of a correct response:
             
             # Apply probe obfuscation if needed
             if probe_to_obfuscate is not None and probe_refusal_threshold is not None:
-                probe_scores = probe_to_obfuscate.get_scores(llm_output_list)
+                probe_scores = probe_to_obfuscate.compute_scores(llm_output_responses)
                 for i, score in enumerate(probe_scores):
-                    if score > probe_refusal_threshold:
+                    float_score = float(score)
+                    if float_score > probe_refusal_threshold:
                         llm_output_list[i] = "I cannot answer that."
-                        logger.debug(f"Probe score {score} above threshold {probe_refusal_threshold}, replacing response with refusal.")
+                        print(f"Probe score {float_score} above threshold {probe_refusal_threshold}, so replacing response with refusal.")
             
             # Get judge scores
             sys_prompt = get_judge_system_prompt(goal, target_str)
             judge_prompts = [sys_prompt + "\n" + f"[PROMPT]:{attack_prompt}\n[ASSISTANT'S RESPONSE]: {target_response}" for attack_prompt, target_response in zip(adv_prompt_list, llm_output_list)]
+            print_timey("PAIR: Getting judge responses...")
             scores_outputs = judge_llm.generate_responses(judge_prompts).responses_strings
+            print_timey("PAIR: Got judge responses.")
             judge_scores = []
             # FLOPs for judge model, using target LLM to tokenize
             # TODO: Consider if padding was used in generation
@@ -305,6 +352,10 @@ Example of a correct response:
         
         # wandb_logger.finish()
         return LLMResponses([final_response], None, None), AttackDetails(flop_counter.num_flops, [final_prompt], None, None)
+
+    @property
+    def is_slow(self) -> bool:
+        return True
 
     def _get_new_adv_prompts_and_improvements(self, 
                                               prev_adv_prompt_list: Optional[list[str]],

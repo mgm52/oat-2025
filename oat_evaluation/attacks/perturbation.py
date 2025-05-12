@@ -54,6 +54,10 @@ class PerturbationAttack(Attack):
             scale = (row_norms / epsilon).clamp(min=1.0)
             perturbation.div_(scale)  # divides each row by scale if norm > epsilon
 
+    @property
+    def is_slow(self) -> bool:
+        return False
+
     def run_attack(
         self,
         llm: LLM,
@@ -139,8 +143,41 @@ class PerturbationAttack(Attack):
             print(f"Harmful token ID dtypes: {[r.dtype for r in harmful_token_ids_including_ending]}")
             print(f"Harmful token ID devices: {[r.device for r in harmful_token_ids_including_ending]}")
 
-        def apply_perturbation(prompt_embeddings_batch: List[torch.Tensor], perturbation: torch.Tensor) -> List[torch.Tensor]:
-            return [p.to(perturbation.device) + perturbation[:p.shape[0]] for p in prompt_embeddings_batch]
+        def apply_perturbation(prompt_embeddings_batch: List[torch.Tensor], 
+                               perturbation_to_apply: torch.Tensor) -> List[torch.Tensor]:
+            """
+            Applies the given perturbation_to_apply to a batch of prompt_embeddings.
+            Handles cases where prompt embeddings are shorter or longer than the perturbation.
+            """
+            perturbed_embeddings_list = []
+            L_pert = perturbation_to_apply.shape[0]  # Length of the perturbation
+            pert_device = perturbation_to_apply.device
+
+            for p_orig_embedding in prompt_embeddings_batch:
+                p_embedding = p_orig_embedding.to(pert_device) # Ensure same device
+                L_p = p_embedding.shape[0]  # Length of the current prompt embedding
+
+                if L_p >= L_pert:
+                    # Prompt embedding is longer than or equal to the perturbation length.
+                    # Perturb the prefix of p_embedding (of length L_pert) with the full perturbation_to_apply.
+                    prefix_to_be_perturbed = p_embedding[:L_pert]
+                    perturbed_prefix = prefix_to_be_perturbed + perturbation_to_apply
+                    
+                    if L_p > L_pert:
+                        # If prompt is longer, concatenate the unperturbed tail.
+                        unperturbed_suffix = p_embedding[L_pert:]
+                        final_perturbed_embedding = torch.cat((perturbed_prefix, unperturbed_suffix), dim=0)
+                    else: # L_p == L_pert
+                        final_perturbed_embedding = perturbed_prefix
+                else: # L_p < L_pert
+                    # Prompt embedding is shorter than the perturbation length.
+                    # Perturb the full prompt_embedding with a prefix of perturbation_to_apply (of length L_p).
+                    perturbation_slice = perturbation_to_apply[:L_p]
+                    final_perturbed_embedding = p_embedding + perturbation_slice
+                
+                perturbed_embeddings_list.append(final_perturbed_embedding)
+            return perturbed_embeddings_list
+
 
         # Helper function to generate responses with the perturbation
         def generate_responses_with_perturbation(
@@ -320,7 +357,8 @@ class PerturbationAttack(Attack):
                     attack_details = AttackDetails(
                         flop_cost=flop_count,
                         generated_embedding_prompts=apply_perturbation(prompt_embeddings, perturbation),
-                        generated_embedding_attack_function=lambda ps: apply_perturbation(ps, perturbation)
+                        generated_embedding_attack_function=lambda ps: apply_perturbation(ps, perturbation),
+                        steps_trained=total_steps
                     )
                     for callback in callbacks:
                         print_timey(f"Executing callback {callback.__name__} for step {total_steps}...")
@@ -360,7 +398,8 @@ class PerturbationAttack(Attack):
         attack_details = AttackDetails(
             flop_cost=flop_count,
             generated_embedding_prompts=final_prompt_embeddings,
-            generated_embedding_attack_function=lambda ps: apply_perturbation(ps, perturbation)
+            generated_embedding_attack_function=lambda ps: apply_perturbation(ps, perturbation),
+            steps_trained=total_steps
         )
         return final_responses, attack_details
 

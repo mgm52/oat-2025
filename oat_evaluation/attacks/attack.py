@@ -21,6 +21,7 @@ class AttackDetails:
     generated_embedding_prompts: Optional[List[torch.Tensor]] = None
     generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None
     generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
+    steps_trained: Optional[int] = None
 
     def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
         if not isinstance(other, AttackDetails):
@@ -29,8 +30,9 @@ class AttackDetails:
                              (self.generated_str_prompts or []) + (other.generated_str_prompts or []),
                              (self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
                              (self.generated_embedding_attack_function or other.generated_embedding_attack_function),
-                             (self.generated_str_attack_function or other.generated_str_attack_function)
-        )
+                             (self.generated_str_attack_function or other.generated_str_attack_function),
+                             max(self.steps_trained or 0, other.steps_trained or 0)
+                             )
 
 
 class Attack(ABC):
@@ -53,9 +55,9 @@ class Attack(ABC):
             llm: The LLM to attack
             prompts: The original prompts to attack
             harmful_responses: Optional target responses, e.g. for soft-suffix attacks
-            probe_to_obfuscate: Optional probe to obfuscate against -- should pair use this??
-            generate_final_responses: Whether to run the final attack or just return the attack function -- when is this needed??
-            callback_steps: List of steps at which to execute callbacks -- what are steps??
+            probe_to_obfuscate: Optional probe to obfuscate against
+            generate_final_responses: Whether to run the final attack or just return the attack function
+            callback_steps: List of steps at which to execute callbacks
             callbacks: List of callback functions that take AttackDetails as input
             
         Returns:
@@ -67,6 +69,12 @@ class Attack(ABC):
     @abstractmethod
     def is_universal(self) -> bool:
         """Whether this attack is universal or per-prompt."""
+        pass
+
+    @property
+    @abstractmethod
+    def is_slow(self) -> bool:
+        """Whether this attack is slow enough to warrant fewer seeds / tests!"""
         pass
 
     @property

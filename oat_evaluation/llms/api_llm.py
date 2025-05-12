@@ -236,7 +236,8 @@ class ApiLLM(LLM):
     @property
     def num_params(self) -> int:
         if self._num_params is None:
-            raise NotImplementedError("API LLM does not support num_params property unless explicitly set")
+            #raise NotImplementedError("API LLM does not support num_params property unless explicitly set")
+            return 1
         return self._num_params
         
     @property
@@ -262,6 +263,10 @@ class ApiLLM(LLM):
         if self._dtype is None:
             raise NotImplementedError("API LLM does not support dtype property unless explicitly set")
         return self._dtype
+
+    # String representation
+    def __str__(self):
+        return f"API LLM with url {self.base_url} and model {self.model_name}"
 
 
 def main():
@@ -350,7 +355,6 @@ def main():
         print("\nStructured Output (PairAttackerResponse):")
         print(f"Improvement: {attacker_data.improvement}")
         print(f"New Prompt: {attacker_data.prompt}")
-
 
 if __name__ == "__main__":
     main() 

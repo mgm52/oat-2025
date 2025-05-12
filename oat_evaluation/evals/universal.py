@@ -1,5 +1,6 @@
+import time
 import traceback
-from oat_evaluation.attacks.attack import Attack, AttackDetails
+from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
 from oat_evaluation.data.standard_data import load_harmless_blend_test_abhay_1533
 from oat_evaluation.llms.llm import LLM
 from oat_evaluation.utils import get_quantile_with_bootstrapping, load_config_and_set_vars, print_mem_usage, print_timey
@@ -8,7 +9,7 @@ load_config_and_set_vars() # needs to be at top to take effect
 import datetime
 import gc
 import random
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union
 
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ from datasets import load_dataset
 from scipy import stats
 
 from oat_evaluation.harm_grading.strongreject import StrongRejectGrader
+from oat_evaluation.harm_grading.batched_sr import AsyncStrongRejectGrader
 from oat_evaluation.attacks.soft_suffix import SoftSuffixAttack
 from oat_evaluation.llms.autollm import AutoLLM
 from oat_evaluation.llms.autopeft import AutoPEFT
@@ -32,7 +34,8 @@ def strongreject_evaluate(
     """
     Compute strongreject results and adjusted scores with probe.
     """
-    sr_grader = StrongRejectGrader()
+    #sr_grader = StrongRejectGrader()
+    sr_grader = AsyncStrongRejectGrader(max_concurrent_calls=256)
     results = sr_grader.grade_harm(prompts, responses)
     
     sr_scores = [m["score"] for m in results.other_metrics]
@@ -97,10 +100,9 @@ def batched_generate_and_score(
     gen_fn = llm.generate_responses_forced if forced else llm.generate_responses
 
     print_mem_usage()
-    print(f"Generating responses...")
     for i in range(0, len(prompts), batch_size):
         #print_mem_usage()
-        print(f"Batch {i // batch_size + 1} of {len(prompts) // batch_size}")
+        print_timey(f"batch_generate_and_score: Forwarding batch {i // batch_size + 1} of {len(prompts) // batch_size}...")
         batch_p = prompts[i : i + batch_size]
         if forced:
             batch_r = references[i : i + batch_size]
@@ -108,20 +110,19 @@ def batched_generate_and_score(
         else:
             resp = gen_fn(batch_p, exposed_activations_request=probe.activation_extraction_request)
         strings.extend(resp.responses_strings)
-        print_timey(f"batch_generate_and_score: done generating responses in batch starting at index {i} of {len(prompts)}, about to compute scores...")
+        #print_timey(f"batch_generate_and_score: done generating responses in batch starting at index {i} of {len(prompts)}, about to compute scores...")
         scores.extend(probe.compute_scores(resp))
         #print_mem_usage()
         #print(f"Deleting...")
-        print_timey(f"batch_generate_and_score: deleting response objects...")
+        #print_timey(f"batch_generate_and_score: deleting response objects...")
         del resp.activation_layers
         del resp.responses_logits
         del resp
         if forced: del batch_r
         del batch_p
-        print_timey(f"batch_generate_and_score: done with deletion!")
+        #print_timey(f"batch_generate_and_score: done with deletion!")
         #torch.cuda.empty_cache(); gc.collect()
-        print_mem_usage()
-    print_timey(f"batch_generate_and_score: Done generating responses...")
+    print_timey(f"batch_generate_and_score: Done forwarding all {len(prompts)} prompts!")
     print_mem_usage()
 
 
@@ -141,9 +142,22 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
         print_timey(f"About to run evaluation... Current attack FLOP cost: {attack_details.flop_cost}")
         print_mem_usage()
 
-        # Generate embeddings for test prompts and apply attack
-        test_embeddings = [llm.string_to_embedding(p) for p in harm_prompts_test]
-        attacked_prompts = attack_details.generated_embedding_attack_function(test_embeddings)
+        # Apply attack to test prompts
+        attacked_llm_inputs: Union[List[str], List[torch.Tensor]]
+        if attack_details.generated_embedding_attack_function:
+            print_timey("Applying embedding-based attack function...")
+            # Generate embeddings for test prompts before applying the attack function
+            test_embeddings = [llm.string_to_embedding(p) for p in harm_prompts_test]
+            attacked_llm_inputs = attack_details.generated_embedding_attack_function(test_embeddings)
+        elif attack_details.generated_str_attack_function:
+            print_timey("Applying string-based attack function...")
+            attacked_llm_inputs = attack_details.generated_str_attack_function(harm_prompts_test)
+        else:
+            # This path should not be reached if Attack.run_attack always populates one of them.
+            # e.g. For PAIR, it will be generated_str_attack_function.
+            # For SoftSuffix, it's generated_embedding_attack_function.
+            raise ValueError("AttackDetails must have either generated_embedding_attack_function or generated_str_attack_function. Check the Attack implementation.")
+
         torch.cuda.empty_cache(); gc.collect()
         print_mem_usage()
 
@@ -159,8 +173,9 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
         # Evaluate attacked responses
         print_timey("\n=== EVALUATE ATTACKED ===")
         print_mem_usage()
+        # note that attacked_llm_inputs can be List[str] or List[torch.Tensor]
         a_strings, a_scores = batched_generate_and_score(
-            llm, attacked_prompts, [], probe, batch_size=16, forced=False
+            llm, attacked_llm_inputs, [], probe, batch_size=16, forced=False
         )
         print_mem_usage()
 
@@ -171,10 +186,12 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
                 harm_prompts_test, na_strings, na_scores, fpr_threshold
             )
         print_timey(f"Full_eval_test: Beginning attacked strongreject evaluation...")
+        time_before_sr_eval = time.time()
         _, a_sr_scores, a_adjusted = strongreject_evaluate(
             harm_prompts_test, a_strings, a_scores, fpr_threshold
         )
-        print_timey(f"Full_eval_test: Completed strongreject evaluations!")
+        time_after_sr_eval = time.time()
+        print_timey(f"Full_eval_test: Completed strongreject evaluations! Time taken for strongreject evaluation: {time_after_sr_eval - time_before_sr_eval:.2f} seconds")
 
         # Calculate refusal rates
         if do_non_attacked_eval:
@@ -219,9 +236,9 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
 
         # === WANDB Logging ===
         metrics_to_log = {}
-        # Use attack_details.current_step if available from AttackDetails
+        # Use attack_details.steps_trained if available from AttackDetails
         # This step aligns with the attack training steps.
-        current_attack_step = attack_details.current_step if hasattr(attack_details, 'current_step') else None
+        current_attack_step = attack_details.steps_trained
 
         metrics_to_log["eval/flop_cost"] = attack_details.flop_cost
 
@@ -257,30 +274,30 @@ def evaluate_attack(attack_details: AttackDetails, llm: AutoLLM, do_non_attacked
         metrics_to_log["eval/ci_avg_sr_probe_attacked_upper"] = a_adjusted_ci[1]
         metrics_to_log["eval/ci_refusal_probe_attacked_lower"] = a_adjusted_refusal_ci[0]
         metrics_to_log["eval/ci_refusal_probe_attacked_upper"] = a_adjusted_refusal_ci[1]
+
+        metrics_to_log["eval/current_attack_step"] = current_attack_step
         
-        if current_attack_step is not None:
-            wandb.log(metrics_to_log, step=current_attack_step)
-        else: # For final evaluation if step is not part of final_attack_details
-            wandb.log(metrics_to_log)
+        #if current_attack_step is not None:
+        #    wandb.log(metrics_to_log, step=current_attack_step)
+        #else: # For final evaluation if step is not part of final_attack_details
+        wandb.log(metrics_to_log)
 
 
 def run_universal_eval(attack: Attack, llm: LLM, harmful: List[Dict], harmless_probe_scores: List[float], 
-         probe=None, do_non_attacked_eval=False, callback_steps=[20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300], seed=42):
+         probe=None, do_non_attacked_eval=False, callback_steps=[20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300], seed=42, num_harmful_test_samples=100, num_harmful_train_samples=1000, dont_perform_obfuscation=False):
     with torch.no_grad():
         
+        print(f"Formatting prompts and responses... (Taking first {num_harmful_test_samples} for test set, and next {num_harmful_train_samples} for train set)")
+        harmful_test_subset = harmful[:num_harmful_test_samples]
+        harmful_train_subset = harmful[num_harmful_test_samples:num_harmful_test_samples + num_harmful_train_samples]
+
         # Set seed
         random.seed(seed)
-        random.shuffle(harmful)
-        
-        print(f"Formatting prompts and responses...")
-        harm_prompts = [e["prompt"] for e in harmful]
-        harm_responses = [e["completion"] for e in harmful]
+        random.shuffle(harmful_test_subset)
+        random.shuffle(harmful_train_subset)
 
-        # Test subsets (first 199 examples)
-        harm_prompts_test, harm_responses_test = harm_prompts[:100], harm_responses[:100]
-
-        # Train subsets (remaining examples)
-        harm_prompts_train, harm_responses_train = harm_prompts[100:], harm_responses[100:]
+        harm_prompts_test, harm_responses_test = [e["prompt"] for e in harmful_test_subset], [e["completion"] for e in harmful_test_subset]
+        harm_prompts_train, harm_responses_train = [e["prompt"] for e in harmful_train_subset], [e["completion"] for e in harmful_train_subset]
 
         # Base model harmless -> FPR threshold
         print("\n=== BASE MODEL HARMLESS ===")
@@ -326,29 +343,55 @@ def run_universal_eval(attack: Attack, llm: LLM, harmful: List[Dict], harmless_p
     # Train attack on remaining harmful data
     print("\n=== ATTACK TRAINING ===")
     print_mem_usage()
-    llm._model.train()
+    if dont_perform_obfuscation:
+        print_timey("We wont perform obfuscation, because dont_perform_obfuscation is True")
+    else:
+        print_timey("We will perform obfuscation")
+    
+    if hasattr(llm, "_model") and attack.box_requirement == BoxRequirement.WHITE_BOX:
+        llm._model.train()
+
+    prompts_for_attack_run: List[str]
+    responses_for_attack_run: List[str]
+    
+    # Determine which data to use for attack.run_attack()
+    if not attack.is_universal:
+        print_timey(f"Attack '{attack.name}' is NOT universal. Using harmful TEST data ({len(harm_prompts_test)} prompts) for attack generation.")
+        prompts_for_attack_run = harm_prompts_test
+        responses_for_attack_run = harm_responses_test
+    else:
+        print_timey(f"Attack '{attack.name}' is universal. Using harmful train data ({len(harm_prompts_train)} prompts) for attack generation.")
+        prompts_for_attack_run = harm_prompts_train
+        responses_for_attack_run = harm_responses_train
+
+    # The callback will use harm_prompts_test for evaluation regardless of what was used for training.
+    evaluation_callbacks = [
+        lambda ad: evaluate_attack(ad, llm, do_non_attacked_eval, harm_prompts_test, probe, fpr_threshold)
+    ]
+
     final_attacked_result, final_attack_details = attack.run_attack(
         llm=llm,
-        prompts=harm_prompts_train,
-        harmful_responses=harm_responses_train,
-        probe_to_obfuscate=probe,
-        generate_final_responses=False,
-        callback_steps = callback_steps,
-        callbacks = [lambda ad: evaluate_attack(ad, llm, do_non_attacked_eval, harm_prompts_test, probe, fpr_threshold)]
+        prompts=prompts_for_attack_run,
+        harmful_responses=responses_for_attack_run,
+        probe_to_obfuscate=probe if not dont_perform_obfuscation else None,
+        probe_refusal_threshold=fpr_threshold if not dont_perform_obfuscation else None,
+        generate_final_responses=False, # Crucial: framework expects attack details, not direct responses here
+        callback_steps=callback_steps, 
+        callbacks=evaluation_callbacks 
     )
     print_mem_usage()
 
     print_timey("Done with attack training! Now to run final evaluation...")
     evaluate_attack(final_attack_details, llm, do_non_attacked_eval, harm_prompts_test, probe, fpr_threshold)
 
-    if hasattr(attack, 'suffix') and attack.suffix is not None and hasattr(final_attack_details, 'current_step'):
+    if hasattr(attack, 'suffix') and attack.suffix is not None and hasattr(final_attack_details, 'steps_trained'):
          try:
              suffix_tensor = attack.suffix.detach().cpu()
              # Save tensor to a file
-             suffix_filename = f"learned_suffix_step{final_attack_details.current_step}.pt"
+             suffix_filename = f"learned_suffix_step{final_attack_details.steps_trained}.pt"
              torch.save(suffix_tensor, suffix_filename)
              
-             artifact_name = f"attack_suffix_{wandb.run.id}_step{final_attack_details.current_step}"
+             artifact_name = f"attack_suffix_{wandb.run.id}_step{final_attack_details.steps_trained}"
              artifact = wandb.Artifact(name=artifact_name, type="attack-suffix")
              artifact.add_file(suffix_filename)
              wandb.log_artifact(artifact)
