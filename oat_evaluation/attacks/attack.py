@@ -22,11 +22,13 @@ class AttackDetails:
     generated_embedding_attack_function: Optional[Callable[[List[torch.Tensor]], List[torch.Tensor]]] = None
     generated_str_attack_function: Optional[Callable[[List[str]], List[str]]] = None
     steps_trained: Optional[int] = None
+    token_cost: Optional[int] = None # TODO: implement in attacks
 
     def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
         if not isinstance(other, AttackDetails):
             raise NotImplementedError(f"Expected type AttackDetails, got type {type(other)}")
         return AttackDetails((self.flop_cost or 0) + (other.flop_cost or 0),
+                             (self.token_cost or 0) + (other.token_cost or 0),
                              (self.generated_str_prompts or []) + (other.generated_str_prompts or []),
                              (self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
                              (self.generated_embedding_attack_function or other.generated_embedding_attack_function),
@@ -87,6 +89,12 @@ class Attack(ABC):
     @abstractmethod
     def can_perform_obfuscation(self) -> bool:
         """Whether this attack can perform probe-obfuscation."""
+        pass
+
+    @property
+    @abstractmethod
+    def uses_api_llm(self) -> bool:
+        """Whether this attack uses an API-based LLM."""
         pass
 
     @property

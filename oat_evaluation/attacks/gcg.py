@@ -126,13 +126,78 @@ class GCGAttack(Attack):
         all_attacked_prompts_for_final_response = []
 
         for original_prompt, target_response in zip(prompts, harmful_responses):
-            # Estimate FLOPs for this prompt's GCG run
-            num_tokens_in_prefix_plus_optim_str_init = llm.get_num_tokens_in_str(original_prompt + self.optim_str_init)
-            approx_seq_len = num_tokens_in_prefix_plus_optim_str_init + llm.get_num_tokens_in_str(target_response)
-            forward_flops_one_pass = calculate_forward_flops(llm.num_params, approx_seq_len)
-            backward_flops_one_pass = calculate_backward_flops(llm.num_params, len(self.optim_str_init.split()))  # Grad w.r.t. suffix tokens
-            current_prompt_flops = self.num_steps * self.batch_size * (forward_flops_one_pass + backward_flops_one_pass)  # Approximation
+            # --- Start of new FLOP calculation logic ---
+
+            # 1. Determine the optim_str to use for length calculations
+            #    If self.optim_str_init is a list, GCG typically uses it to initialize a buffer.
+            #    For FLOPs, we need a representative string. Let's use the first one if it's a list,
+            #    or the string itself. GCG expects all strings in the list to tokenize to the same length.
+            optim_str_for_len_calc = self.optim_str_init
+            if isinstance(self.optim_str_init, list):
+                if not self.optim_str_init: # Handle empty list case
+                    optim_str_for_len_calc = " ".join(["x"] * 20) # Default GCG-like init
+                else:
+                    optim_str_for_len_calc = self.optim_str_init[0]
+
+            # 2. More accurate count of optimized tokens for backward pass
+            num_optim_tokens = llm.get_num_tokens_in_str(optim_str_for_len_calc)
+
+            # 3. Estimate sequence length for FORWARD passes on the TARGET model
+            #    This estimates the full sequence length GCG works with.
+            #    It's an overestimate if use_prefix_cache=True, but simpler than precise calculation.
+            approx_seq_len_target_fwd = llm.get_num_tokens_in_str(original_prompt + optim_str_for_len_calc) + \
+                                    llm.get_num_tokens_in_str(target_response)
+
+            # 4. Calculate FLOPs for a single forward and backward pass on the TARGET model
+            flops_fwd_pass_target = calculate_forward_flops(llm.num_params, approx_seq_len_target_fwd)
+            flops_bwd_pass_target = calculate_backward_flops(llm.num_params, num_optim_tokens)
+
+            # 5. Cost of ONE gradient calculation step (1 fwd + 1 bwd) on TARGET model
+            cost_one_grad_calc_step_target = flops_fwd_pass_target + flops_bwd_pass_target
+
+            # 6. Cost of evaluating all `search_width` candidates on TARGET model (search_width fwd passes)
+            cost_eval_candidates_target = self.search_width * flops_fwd_pass_target
+
+            # 7. Calculate FLOPs per GCG step based on whether probe sampling is used
+            if not self.use_probe_sampling:
+                flops_per_gcg_step = cost_one_grad_calc_step_target + cost_eval_candidates_target
+            else:
+                # Probe sampling has additional/different components
+                psc = attack_config.probe_sampling_config # attack_config is already defined in your method
+                assert psc is not None, "ProbeSamplingConfig is needed for FLOP calculation"
+
+                # Cost for probe set evaluation on TARGET model
+                probe_size = self.search_width // psc.sampling_factor
+                cost_probe_eval_target = probe_size * flops_fwd_pass_target
+
+                # Cost for filtered set evaluation on TARGET model (estimate)
+                # psc.r is typically 8. This estimates (1-alpha)*B/R with alpha=0 for max computation.
+                estimated_filtered_size = max(1, self.search_width // psc.r)
+                cost_filtered_eval_target = estimated_filtered_size * flops_fwd_pass_target
+
+                # Cost for DRAFT model evaluations (all search_width candidates)
+                draft_model_num_params = sum(p.numel() for p in psc.draft_model.parameters())
+
+                # Simplified: Use target model's approx_seq_len for draft model as a rough proxy.
+                # This avoids complex re-tokenization for FLOP estimate here.
+                # A more accurate way would be to tokenize with draft_tokenizer, but this is simpler.
+                approx_seq_len_draft_fwd_proxy = approx_seq_len_target_fwd
+                flops_fwd_pass_draft = calculate_forward_flops(draft_model_num_params, approx_seq_len_draft_fwd_proxy)
+                cost_draft_eval_all = self.search_width * flops_fwd_pass_draft
+
+                flops_per_gcg_step = (
+                    cost_one_grad_calc_step_target +  # Grad calc on target
+                    cost_probe_eval_target +          # Probe eval on target
+                    cost_filtered_eval_target +       # Filtered eval on target
+                    cost_draft_eval_all               # All candidates eval on draft
+                )
+
+            # 8. Total FLOPs for the current prompt
+            #    CRITICAL CHANGE: DO NOT multiply by self.batch_size here.
+            current_prompt_flops = self.num_steps * flops_per_gcg_step
+
             total_flop_cost += current_prompt_flops
+            # --- End of new FLOP calculation logic ---
 
             result = nanogcg.run(
                 model=llm._model,
@@ -152,7 +217,7 @@ class GCGAttack(Attack):
         final_attack_details = AttackDetails(
             flop_cost=total_flop_cost,
             generated_str_attack_function=_gcg_attack_fn,
-            generated_str_prompts=list(prompt_to_attacked_prompt_map.values()) if prompt_to_attacked_prompt_map else None,
+            generated_str_prompts=[prompt_to_attacked_prompt_map[p] for p in prompts] if prompt_to_attacked_prompt_map else None,
             steps_trained=self.num_steps
         )
 
@@ -183,3 +248,8 @@ class GCGAttack(Attack):
     @property
     def is_slow(self) -> bool:
         return True
+
+    @property
+    def uses_api_llm(self) -> bool:
+        """Whether this attack uses an API-based LLM."""
+        return False

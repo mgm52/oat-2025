@@ -41,6 +41,11 @@ class SoftSuffixAttack(Attack):
         self.max_steps = max_steps
         print(f"SoftSuffixAttack initialized with suffix_length {suffix_length}, num_epochs {num_epochs}, learning_rate {learning_rate}, batch_size {batch_size}, epsilon {epsilon}, probe_loss_weight {probe_loss_weight}, debug_mode {debug_mode}, chunk_size {chunk_size}")
 
+    @property
+    def uses_api_llm(self) -> bool:
+        """Whether this attack uses an API-based LLM."""
+        return False
+
     def clip_suffix(self, suffix: torch.Tensor, epsilon: float) -> None:
         """Clips the suffix's total L2 norm in-place to be <= epsilon."""
         with torch.no_grad():

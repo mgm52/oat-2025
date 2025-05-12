@@ -5,7 +5,7 @@ from typing import List, Any, Optional, Tuple, Callable
 from tqdm import tqdm
 
 from oat_evaluation.attacks.attack import Attack, AttackDetails, BoxRequirement
-from oat_evaluation.llms.api_llm import PairAttackerResponse
+from oat_evaluation.llms.api_llm import PairAttackerResponse, ApiLLM
 from oat_evaluation.llms.llm import LLM, LLMResponses
 from oat_evaluation.probes.probe import Probe
 from oat_evaluation.utils import FlopCounter, print_mem_usage, print_timey
@@ -32,6 +32,12 @@ class PAIRAttack(Attack):
     max_cuda_oom_retries: int = 3
     attack_llm: Optional[LLM] = None
     judge_llm: Optional[LLM] = None
+
+    @property
+    def uses_api_llm(self) -> bool:
+        """Whether this attack uses an API-based LLM."""
+        return (isinstance(self.attack_llm, ApiLLM) or 
+                isinstance(self.judge_llm, ApiLLM))
 
     def run_attack(
         self,
@@ -153,7 +159,8 @@ class PAIRAttack(Attack):
         max_num_iterations = self.max_num_iterations
         keep_last_n = self.keep_last_n_in_convs
         max_json_attempts = self.max_json_attempts
-        flop_counter = FlopCounter()
+        flop_counter = FlopCounter() if not self.uses_api_llm else None
+        token_counter = 0
         
         memory_before = print_mem_usage(print_mem=False)
 
@@ -256,18 +263,25 @@ Example of a correct response:
                     for i, (conv, full_output) in enumerate(zip(convs_subset, attacker_outputs)):
                         orig_index = batch_indices[i]
                         # Update conversation
+                        if full_output is None:
+                            new_indices_to_regenerate.append(orig_index)
+                            continue
+                            
+                        # Ensure the output is not empty or None before adding to conversation
+                        if not full_output.strip():
+                            new_indices_to_regenerate.append(orig_index)
+                            continue
+                            
                         if convs[orig_index][-1]["role"] == "assistant":
                             convs[orig_index][-1]["content"] = full_output
                         else:
                             convs[orig_index].append({"role": "assistant", "content": full_output})
                         
                         # FLOPs for attacker model, using target LLM to tokenize
-                        num_tokens = target_llm.get_num_tokens_in_chat(conv)
-                        flop_counter.num_flops += calculate_forward_flops(attack_llm.num_params, num_tokens)
+                        if not self.uses_api_llm:
+                            num_tokens = target_llm.get_num_tokens_in_chat(conv)
+                            flop_counter.num_flops += calculate_forward_flops(attack_llm.num_params, num_tokens)
 
-                        if full_output is None:
-                            new_indices_to_regenerate.append(orig_index)
-                            continue
                         attack_dict, json_str = extract_json(full_output)
                         if attack_dict is not None:
                             valid_outputs[orig_index] = attack_dict
@@ -292,9 +306,10 @@ Example of a correct response:
             llm_output_list = llm_output_responses.responses_strings
             # FLOPs for target model
             # TODO: Consider if padding was used in generation
-            num_tokens = sum(target_llm.get_num_tokens_in_str(output) for output in llm_output_list)
-            num_tokens += sum(target_llm.get_num_tokens_in_str(prompt) for prompt in adv_prompt_list)
-            flop_counter.num_flops += calculate_forward_flops(target_llm.num_params, num_tokens)
+            if not self.uses_api_llm:
+                num_tokens = sum(target_llm.get_num_tokens_in_str(output) for output in llm_output_list)
+                num_tokens += sum(target_llm.get_num_tokens_in_str(prompt) for prompt in adv_prompt_list)
+                flop_counter.num_flops += calculate_forward_flops(target_llm.num_params, num_tokens)
             logger.debug("Finished getting target responses.")
             
             # Apply probe obfuscation if needed
@@ -315,9 +330,10 @@ Example of a correct response:
             judge_scores = []
             # FLOPs for judge model, using target LLM to tokenize
             # TODO: Consider if padding was used in generation
-            num_tokens = sum(target_llm.get_num_tokens_in_str(prompt) for prompt in judge_prompts)
-            num_tokens += sum(target_llm.get_num_tokens_in_str(output) for output in scores_outputs)
-            flop_counter.num_flops += calculate_forward_flops(judge_llm.num_params, num_tokens)
+            if not self.uses_api_llm:
+                num_tokens = sum(target_llm.get_num_tokens_in_str(prompt) for prompt in judge_prompts)
+                num_tokens += sum(target_llm.get_num_tokens_in_str(output) for output in scores_outputs)
+                flop_counter.num_flops += calculate_forward_flops(judge_llm.num_params, num_tokens)
             for raw_output in scores_outputs:
                 pattern = r'\[\[(\d+)\]\]'
                 match = re.search(pattern, raw_output)
@@ -351,7 +367,7 @@ Example of a correct response:
                 break
         
         # wandb_logger.finish()
-        return LLMResponses([final_response], None, None), AttackDetails(flop_counter.num_flops, [final_prompt], None, None)
+        return LLMResponses([final_response], None, None), AttackDetails(flop_cost=flop_counter.num_flops if flop_counter else 0, generated_str_prompts=[final_prompt])
 
     @property
     def is_slow(self) -> bool:
@@ -386,4 +402,4 @@ Example of a correct response:
 
     # String representation
     def __str__(self):
-        return f"PAIRAttack(n_concurrent_jailbreaks={self.n_concurrent_jailbreaks}, max_num_iterations={self.max_num_iterations}, keep_last_n_in_convs={self.keep_last_n_in_convs}, max_json_attempts={self.max_json_attempts}, max_new_attack_tokens={self.max_new_attack_tokens}, max_new_victim_tokens={self.max_new_victim_tokens})"
+        return f"PAIRAttack(n_concurrent_jailbreaks={self.n_concurrent_jailbreaks}, max_num_iterations={self.max_num_iterations}, keep_last_n_in_convs={self.keep_last_n_in_convs}, max_json_attempts={self.max_json_attempts}, max_new_attack_tokens={self.max_new_attack_tokens}, max_new_victim_tokens={self.max_new_victim_tokens}, attack_llm={self.attack_llm}, judge_llm={self.judge_llm})"

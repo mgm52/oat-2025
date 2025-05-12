@@ -37,7 +37,7 @@ class PerturbationAttack(Attack):
         self.chunk_size = chunk_size
         self.adam_epsilon = adam_epsilon
         self.max_steps = max_steps
-        print(f"PerturbationAttack initialized with num_epochs {num_epochs}, learning_rate {learning_rate}, batch_size {batch_size}, epsilon {epsilon}, probe_loss_weight {probe_loss_weight}, debug_mode {debug_mode}, chunk_size {chunk_size}")
+        print(f"PerturbationAttack initialized with num_epochs {num_epochs}, learning_rate {learning_rate}, batch_size {batch_size}, epsilon {epsilon}, probe_loss_weight {probe_loss_weight}, debug_mode {debug_mode}, chunk_size {chunk_size}, max_steps {max_steps}")
 
     def clip_perturbation(self, perturbation: torch.Tensor, epsilon: float) -> None:
         """Clips the perturbation's total L2 norm in-place to be <= epsilon."""
@@ -56,6 +56,11 @@ class PerturbationAttack(Attack):
 
     @property
     def is_slow(self) -> bool:
+        return False
+
+    @property
+    def uses_api_llm(self) -> bool:
+        """Whether this attack uses an API-based LLM."""
         return False
 
     def run_attack(

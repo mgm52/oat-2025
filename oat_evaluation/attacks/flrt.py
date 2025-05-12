@@ -37,6 +37,11 @@ class FLRTAttack(Attack):
         self.verbose = verbose
         self.activation_loss_weight = activation_loss_weight
 
+    @property
+    def uses_api_llm(self) -> bool:
+        """Whether this attack uses an API-based LLM."""
+        return False
+
     def run_attack(
         self,
         llm: AutoLLM,
@@ -100,7 +105,9 @@ class FLRTAttack(Attack):
             num_tokens_in_prefix_plus_init = llm.get_num_tokens_in_str(prompt) + self.init_len
             approx_seq_len = num_tokens_in_prefix_plus_init + llm.get_num_tokens_in_str(response)
             forward_flops_one_pass = calculate_forward_flops(llm.num_params, approx_seq_len)
-            current_prompt_flops = self.num_steps * self.k2 * forward_flops_one_pass  # Approximation
+            # Rough average passes per step
+            passes_per_step = self.k1 + self.p_add + self.p_swap
+            current_prompt_flops = self.num_steps * passes_per_step * forward_flops_one_pass
             total_flop_cost += current_prompt_flops
 
             result = nanoflrt.run(
@@ -122,7 +129,7 @@ class FLRTAttack(Attack):
         final_attack_details = AttackDetails(
             flop_cost=total_flop_cost,
             generated_str_attack_function=_flrt_attack_fn,
-            generated_str_prompts=list(prompt_to_attacked_prompt_map.values()) if prompt_to_attacked_prompt_map else None,
+            generated_str_prompts=[prompt_to_attacked_prompt_map[p] for p in prompts] if prompt_to_attacked_prompt_map else None,
             steps_trained=self.num_steps
         )
 
