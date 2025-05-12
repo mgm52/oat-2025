@@ -57,7 +57,7 @@ def run_main():
     print(f"Loaded {len(harmless)} harmless examples. First one: {harmless[0]}")
 
     num_steps_soft_attack_standard = 75 if not MINI_MODE else 8
-    remote_attacker_llm = ApiLLM(model_name = "gpt-4.1", 
+    remote_attacker_llm = ApiLLM(model_name = "gpt-4.1-mini", 
                            base_url = "https://api.openai.com/v1",
                            api_key_env_var="OPENAI_API_KEY",
                            )
@@ -75,17 +75,17 @@ def run_main():
 
         # PAIR attacks
         lambda: PAIRAttack(
-            n_concurrent_jailbreaks=2,
+            n_concurrent_jailbreaks=1,
             max_num_iterations=2,
             keep_last_n_in_convs=2,
-            max_json_attempts=1,
+            max_json_attempts=2,
             max_new_attack_tokens=256,
             max_new_victim_tokens=256,
             attack_llm=remote_attacker_llm,
             judge_llm=remote_attacker_llm,
         ),
         lambda: PAIRAttack(
-            n_concurrent_jailbreaks=2,
+            n_concurrent_jailbreaks=1,
             max_num_iterations=8,
             keep_last_n_in_convs=4,
             max_json_attempts=2,
