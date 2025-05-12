@@ -81,7 +81,7 @@ class PAIRAttack(Attack):
                     param.requires_grad = False
         
         final_llm_responses = LLMResponses([], [], [])
-        final_attack_details = AttackDetails(None, None, None, None)
+        final_attack_details = AttackDetails()
         #with torch.inference_mode(): # disabling because otherwise we can't combine with non-inference tensors e.g. for probing
         for prompt, target in tqdm(zip(prompts, harmful_responses), total=len(prompts), desc="Processing prompts"):
             for attempt in range(self.max_cuda_oom_retries):
@@ -110,7 +110,7 @@ class PAIRAttack(Attack):
                         print("Max retries reached. Skipping.")
                         # Handle failure (e.g., skip or raise)
                         final_llm_responses += LLMResponses([""], [], [])
-                        final_attack_details += AttackDetails(0, prompt, None, None)
+                        final_attack_details += AttackDetails(flop_cost=0, generated_str_prompts=[prompt])
 
                         # Ensure generated_str_prompts has an entry for each original_prompt
                         if final_attack_details.generated_str_prompts is None:
@@ -352,6 +352,7 @@ Example of a correct response:
                 if score > final_score:
                     final_prompt = prompt
                     final_response = response
+                    final_score = score
 
             # WandB log values
             # wandb_logger.log(iteration, extracted_attack_list, llm_output_list, judge_scores)
