@@ -20,6 +20,7 @@ pip install numpy==1.26.4
 pip install git+https://github.com/dsbowen/strong_reject.git@main
 pip install wandb
 pip install fastchat
+pip install git+https://github.com/GraySwanAI/nanoGCG.git@main  # GCG attack
 
 # sudo apt-get install python-tk python3-tk tk-dev
 # huggingface-cli login
