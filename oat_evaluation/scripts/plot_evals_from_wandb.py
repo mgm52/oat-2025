@@ -8,6 +8,7 @@ import re # For filename sanitization
 import textwrap # For title wrapping
 import seaborn as sns # For styling
 from scipy.stats import bootstrap # For BCa confidence intervals
+import argparse # For command line arguments
 
 # --- Configuration ---
 # Replace with your W&B entity (username or team) and project name
@@ -42,6 +43,9 @@ def get_attack_config_key(config):
     for k, v in attack_params.items():
         if isinstance(v, list):
             frozen_params[k] = tuple(v)
+        elif isinstance(v, dict):
+            # HACK for now, due to oversharing in api_llm strings in some evals
+            frozen_params[k] = v["model_name"]
         else:
             frozen_params[k] = v
     params_tuple = tuple(sorted(frozen_params.items(), key=lambda item: str(item[0])))
@@ -136,7 +140,7 @@ def fetch_and_process_wandb_data(entity, project, group_names):
             attack_config_key = (attack_config_key[0], attack_config_key[1], run_attack_index)
             print(f"  HACK: New attack_config_key: {attack_config_key}")
         else:
-            print(f"  HACK: 20250512_015933_2360201_pair_eval not in group_names")
+            print(f"  HACK: 20250512_015933_2360201_pair_eval not in group_names. Using attack_config_key: {attack_config_key}")
 
         model_probe_key = get_model_probe_key(config)
         
@@ -252,12 +256,18 @@ def fetch_and_process_wandb_data(entity, project, group_names):
 
 # --- Plotting Function ---
 
-def plot_results(processed_data, seed_counts, group_names_list):
+def plot_results(processed_data, seed_counts, group_names_list, model_to_skip=None):
     """
     Generates and saves plots to SAVE_DIR based on the processed W&B data.
     • If every series in a subplot has only one x-value, the subplot is rendered
       as a bar chart whose x-axis is the model / probe label.
     • Otherwise the subplot is rendered as the usual line chart with shaded CIs.
+    
+    Args:
+        processed_data: The processed W&B data
+        seed_counts: Counts of seeds per model-probe combination
+        group_names_list: List of W&B group names
+        model_to_skip: Optional model name to skip in plotting
     """
     if not processed_data:
         print("No data available for plotting.")
@@ -284,6 +294,9 @@ def plot_results(processed_data, seed_counts, group_names_list):
         model_info_parts = []
         for model_probe_key in model_level_data.keys():
             model_name_str, probe_name_str = model_probe_key
+            # Skip the specified model if provided
+            if model_to_skip and model_name_str == model_to_skip:
+                continue
             run_count = seed_counts.get(attack_config_key, {}).get(model_probe_key, 0)
             model_info_parts.append(f"{model_name_str} ({run_count} runs)")
         title_wrap_width = 70
@@ -315,10 +328,14 @@ def plot_results(processed_data, seed_counts, group_names_list):
 
             # gather data for this metric across all (model, probe)
             for model_probe_key, metric_specific_results in model_level_data.items():
+                model_name_str, probe_name_str = model_probe_key
+                # Skip the specified model if provided
+                if model_to_skip and model_name_str == model_to_skip:
+                    continue
+                    
                 if wandb_metric_key not in metric_specific_results:
                     continue
                 steps, means, ci_lowers, ci_uppers = metric_specific_results[wandb_metric_key]
-                model_name_str, probe_name_str = model_probe_key
                 label = probe_name_str if probe_name_str.lower() not in {"unknownprobe", "none"} else model_name_str
                 series.append(
                     {
@@ -407,37 +424,30 @@ def plot_results(processed_data, seed_counts, group_names_list):
 # --- Main Execution ---
 
 if __name__ == "__main__":
-    wandb_entity = input(f"Enter W&B entity (or press Enter for default '{DEFAULT_WANDB_ENTITY}'): ").strip()
-    if not wandb_entity:
-        wandb_entity = DEFAULT_WANDB_ENTITY
+    parser = argparse.ArgumentParser(description="Plot evaluation results from W&B runs.")
+    parser.add_argument("--entity", default=DEFAULT_WANDB_ENTITY, help="W&B entity (user or team)")
+    parser.add_argument("--project", default=DEFAULT_WANDB_PROJECT, help="W&B project name")
+    parser.add_argument("--groups", default=DEFAULT_GROUP_NAMES, help="Comma-separated list of W&B group names")
+    parser.add_argument("--model-to-skip", help="Model name to skip in plotting")
+    args = parser.parse_args()
 
-    wandb_project = input(f"Enter W&B project (or press Enter for default '{DEFAULT_WANDB_PROJECT}'): ").strip()
-    if not wandb_project:
-        wandb_project = DEFAULT_WANDB_PROJECT
-    
-    # Example group names: "20240101_my_experiment_gcm,20240102_another_run_gcm"
-    # For testing with dummy data, ensure your W&B project has runs in these groups
-    group_names_str = input(f"Enter W&B group names (comma-separated) (default: '{DEFAULT_GROUP_NAMES}'): ").strip()
-    if not group_names_str:
-        group_names_str = DEFAULT_GROUP_NAMES
-    group_names_list = [name.strip() for name in group_names_str.split(',') if name.strip()]
+    group_names_list = [name.strip() for name in args.groups.split(',') if name.strip()]
 
-    if not wandb_project:
+    if not args.project:
         print("W&B project is required.")
     elif not group_names_list:
         print("No group names entered. Exiting.")
     else:
-        print(f"\nAttempting to fetch data for entity='{wandb_entity}', project='{wandb_project}', groups={group_names_list}")
+        print(f"\nAttempting to fetch data for entity='{args.entity}', project='{args.project}', groups={group_names_list}")
+        if args.model_to_skip:
+            print(f"Will skip model: {args.model_to_skip}")
         
-        # wandb.login() # Make sure you are logged in. Can be done via CLI `wandb login` as well.
-
-        processed_wandb_data, seed_counts = fetch_and_process_wandb_data(wandb_entity, wandb_project, group_names_list)
+        processed_wandb_data, seed_counts = fetch_and_process_wandb_data(args.entity, args.project, group_names_list)
         
         if not processed_wandb_data:
             print("\nNo data was processed. Ensure group names and project/entity are correct and runs have completed logging.")
         else:
             print(f"\nData processing complete. Found data for {len(processed_wandb_data)} attack configurations.")
             print("Generating and saving plots...")
-            # Removed entity and project from plot_results as they are not used there
-            plot_results(processed_wandb_data, seed_counts, group_names_list)
+            plot_results(processed_wandb_data, seed_counts, group_names_list, args.model_to_skip)
             print("\nPlotting finished.")
