@@ -1,3 +1,6 @@
+from oat_evaluation.utils import load_config_and_set_vars
+load_config_and_set_vars()
+
 from abc import ABC, abstractmethod
 import collections
 import contextlib
@@ -52,25 +55,9 @@ class AutoLLM(LLM):
         # Try adding attn_implementation if supported by model and hardware
         # Requires: pip install flash-attn
         # Check model documentation/Hugging Face page for compatibility.
-        try:
-             self._model = AutoModelForCausalLM.from_pretrained(
-                 model_path,
-                 device_map="cuda:0", # Use single CUDA device instead of auto
-                 torch_dtype=dtype,
-                 trust_remote_code=True,
-                 attn_implementation="flash_attention_2" # Use Flash Attention 2
-             )
-             print_timey("Model loaded with Flash Attention 2.")
-        except ImportError:
-             print_timey("Flash Attention 2 not available or not installed. Falling back.")
-             self._model = AutoModelForCausalLM.from_pretrained(
-                model_path, device_map="cuda:0", torch_dtype=dtype, trust_remote_code=True
-            )
-        except Exception as e: # Catch other potential errors like model incompatibility
-             print_timey(f"Failed to load with Flash Attention 2 ({e}). Falling back.")
-             self._model = AutoModelForCausalLM.from_pretrained(
-                model_path, device_map="cuda:0", torch_dtype=dtype, trust_remote_code=True
-            )
+        self._model = AutoModelForCausalLM.from_pretrained(
+            model_path, device_map="cuda:0", torch_dtype=dtype, trust_remote_code=True
+        )
 
         print_timey("Model loaded. Loading tokenizer...")
         # Override LAT llama tokenizer (not sure why it breaks)

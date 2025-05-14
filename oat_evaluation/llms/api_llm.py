@@ -266,8 +266,10 @@ class ApiLLM(LLM):
 
     # String representation
     def __str__(self):
-        return f"API LLM with url {self.base_url} and model {self.model_name}"
-
+        return f"API_LLM(url={self.base_url}, model={self.model_name})"
+    
+    def __repr__(self):
+        return f"API_LLM(url={self.base_url}, model={self.model_name})"
 
 def main():
     # Initialize the API LLM

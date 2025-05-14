@@ -1,18 +1,7 @@
-from typing import List, Tuple, Union
-import numpy as np
-import torch
-from dataclasses import dataclass
-import yaml
+
 import os
 import wandb
-
-from datetime import datetime
-from datasets import DatasetDict, Dataset, IterableDatasetDict, IterableDataset
-import subprocess
-import pathlib
-import time # Added for polling delay
-from collections import deque # Added for managing command queue
-
+import yaml
 
 def load_config_and_set_vars():
     # Try a few relative paths
@@ -26,13 +15,28 @@ def load_config_and_set_vars():
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    wandb.login(key=config["WANDB_API_KEY"])
-    
     os.environ["OPENAI_API_KEY"] = config["OPENAI_API_KEY"]
     os.environ["HF_HOME"] = config["HF_HOME"]
+    print(f"Setting HF_HOME: {os.environ['HF_HOME']}")
     os.environ["HF_HUB_CACHE"] = f"{config['HF_HOME']}/hub"
     os.environ["HF_TOKEN"] = config["HF_TOKEN"]
+
+    wandb.login(key=config["WANDB_API_KEY"])
     return config
+
+load_config_and_set_vars()
+
+from typing import List, Tuple, Union
+import numpy as np
+import torch
+from dataclasses import dataclass
+
+from datetime import datetime
+from datasets import DatasetDict, Dataset, IterableDatasetDict, IterableDataset
+import subprocess
+import pathlib
+import time # Added for polling delay
+from collections import deque # Added for managing command queue
 
 def get_available_gpus():
     """Get the number of available GPUs"""
@@ -187,7 +191,7 @@ def run_many_commands_on_gpus(commands, USE_ALL_GPUS=True, log_dir="oat_training
         if completed_task_count == total_tasks:
             break # All tasks are done
 
-        time.sleep(5) # Polling interval to check process statuses
+        time.sleep(10) # Polling interval to check process statuses
     
     print("\nAll training commands have been processed.")
 
