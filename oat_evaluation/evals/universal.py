@@ -373,8 +373,8 @@ def run_universal_eval(attack: Attack, llm: LLM, harmful: List[Dict], harmless_p
         llm=llm,
         prompts=prompts_for_attack_run,
         harmful_responses=responses_for_attack_run,
-        probe_to_obfuscate=probe if not dont_perform_obfuscation else None,
-        probe_refusal_threshold=fpr_threshold if not dont_perform_obfuscation else None,
+        probe_to_obfuscate=probe if ((not dont_perform_obfuscation) and attack.can_perform_obfuscation) else None,
+        probe_refusal_threshold=fpr_threshold if ((not dont_perform_obfuscation) and attack.can_perform_obfuscation) else None,
         generate_final_responses=False, # Crucial: framework expects attack details, not direct responses here
         callback_steps=callback_steps, 
         callbacks=evaluation_callbacks 
