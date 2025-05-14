@@ -9,6 +9,9 @@ oat_evaluation/eval_logs/
 oat_evaluation/eval_plots/
 oat_training/oat_training_logs/
 oat_training/probe_scoring_test.py
+oat_evaluation/outputs
+.venv2025
+checkpoints/models
 
 ###
 
