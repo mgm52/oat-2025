@@ -24,17 +24,25 @@ class AttackDetails:
     steps_trained: Optional[int] = None
     token_cost: Optional[int] = None # TODO: implement in attacks
 
-    def __add__(self, other: 'AttackDetails') -> 'AttackDetails':
+    def __add__(self, other: "AttackDetails") -> "AttackDetails":
         if not isinstance(other, AttackDetails):
-            raise NotImplementedError(f"Expected type AttackDetails, got type {type(other)}")
-        return AttackDetails((self.flop_cost or 0) + (other.flop_cost or 0),
-                             (self.token_cost or 0) + (other.token_cost or 0),
-                             (self.generated_str_prompts or []) + (other.generated_str_prompts or []),
-                             (self.generated_embedding_prompts or []) + (other.generated_embedding_prompts or []),
-                             (self.generated_embedding_attack_function or other.generated_embedding_attack_function),
-                             (self.generated_str_attack_function or other.generated_str_attack_function),
-                             max(self.steps_trained or 0, other.steps_trained or 0)
-                             )
+            return NotImplemented
+
+        return AttackDetails(
+            flop_cost=(self.flop_cost or 0) + (other.flop_cost or 0),
+            generated_str_prompts=(self.generated_str_prompts or [])
+                                + (other.generated_str_prompts or []),
+            generated_embedding_prompts=(self.generated_embedding_prompts or [])
+                                    + (other.generated_embedding_prompts or []),
+            generated_embedding_attack_function=(
+                self.generated_embedding_attack_function
+                or other.generated_embedding_attack_function),
+            generated_str_attack_function=(
+                self.generated_str_attack_function
+                or other.generated_str_attack_function),
+            steps_trained=max(self.steps_trained or 0, other.steps_trained or 0),
+            token_cost=(self.token_cost or 0) + (other.token_cost or 0),
+        )
 
 
 class Attack(ABC):
