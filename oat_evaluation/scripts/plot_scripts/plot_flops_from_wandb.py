@@ -9,16 +9,19 @@ import os
 import re # For filename sanitization
 import textwrap # For title wrapping
 import seaborn as sns # For styling
+import argparse # For command line arguments
 
 # --- Configuration ---
 DEFAULT_WANDB_ENTITY = "mgm52"
 DEFAULT_WANDB_PROJECT = "oat_evaluation"
 DEFAULT_GROUP_NAMES = "20250511_043048_3142425_big_eval_repaired"
-BASE_SAVE_DIR_FLOPS = "oat_evaluation/eval_plots_flops"
+BASE_SAVE_DIR_FLOPS = "oat_evaluation/outputs/eval_plots_flops"
 
 COLOR_METRICS = {
     "Avg SR Score (Attacked)": "eval/avg_sr_score_attacked",
     "Jailbreak Rate (Attacked)": "eval/jailbreak_rate_attacked",
+    "Avg SR Score Probe (Attacked)": "eval/avg_sr_score_probe_attacked",
+    "Jailbreak Rate Probe (Attacked)": "eval/jailbreak_rate_probe_attacked",
 }
 X_AXIS_METRIC_HISTORY = "eval/flop_cost"
 Y_AXIS_CONFIG_KEY = "defender_flop_cost"
@@ -99,10 +102,46 @@ def plot_heatmaps_flops(plot_df, group_names_list,
 
     plot_idx_global = 0
     for attack_name, attack_df in plot_df.groupby("attack_name"):
+        # Get all defenders for this attack
+        all_defenders = sorted(attack_df['defender_legend_label'].unique())
+        
+        # Count points per defender (only counting points with valid data)
+        defender_counts = {}
+        for defender in all_defenders:
+            # Count how many points this defender contributes to this attack
+            # Only counting points with non-zero defender flops
+            defender_df = attack_df[
+                (attack_df['defender_legend_label'] == defender) & 
+                (attack_df['defender_flops'] > 0)
+            ]
+            defender_counts[defender] = len(defender_df)
+        
+        # Create a string with defender names and their point counts
+        defenders_with_counts = [f"{defender} ({defender_counts[defender]} pts)" for defender in all_defenders]
+        defenders_str = ", ".join(defenders_with_counts)
+        
         for metric_label, metric_key in COLOR_METRICS.items():
             df_use = attack_df.dropna(subset=[metric_key])
             if df_use.empty:
                 continue
+
+            # Update defender counts for this specific metric
+            defender_counts_for_metric = {}
+            for defender in all_defenders:
+                # Count how many points this defender contributes to this metric
+                # Only counting points with non-zero defender flops and valid metric value
+                defender_df = df_use[
+                    (df_use['defender_legend_label'] == defender) & 
+                    (df_use['defender_flops'] > 0) &
+                    (pd.notna(df_use[metric_key]))
+                ]
+                defender_counts_for_metric[defender] = len(defender_df)
+            
+            # Create a string with defender names and their point counts for this metric
+            defenders_with_counts_for_metric = [f"{defender} ({defender_counts_for_metric[defender]} pts)" 
+                                              for defender in all_defenders 
+                                              if defender_counts_for_metric[defender] > 0]  # Only include defenders with points
+            defenders_str_for_metric = ", ".join(defenders_with_counts_for_metric)
 
             # Bin in log-space
             df_use["att_bin"] = pd.cut(np.log10(df_use[X_AXIS_METRIC_HISTORY]),
@@ -123,9 +162,9 @@ def plot_heatmaps_flops(plot_df, group_names_list,
             fig, ax = plt.subplots(figsize=(10, 7), constrained_layout=True)
 
             # Colour-bar bounds identical to your scatter version
-            if metric_key == "eval/avg_sr_score_attacked":
+            if metric_key == "eval/avg_sr_score_attacked" or metric_key == "eval/avg_sr_score_probe_attacked":
                 vmin, vmax, cmap = 0, 1, "coolwarm_r"
-            elif metric_key == "eval/jailbreak_rate_attacked":
+            elif metric_key == "eval/jailbreak_rate_attacked" or metric_key == "eval/jailbreak_rate_probe_attacked":
                 vmin, vmax, cmap = 0, 1, "viridis"
             else:
                 vmin, vmax, cmap = pivot.min().min(), pivot.max().max(), "viridis"
@@ -143,8 +182,11 @@ def plot_heatmaps_flops(plot_df, group_names_list,
 
             ax.set_xlabel(f"Attacker FLOP Cost ({X_AXIS_METRIC_HISTORY})")
             ax.set_ylabel(f"Defender FLOPs ({Y_AXIS_CONFIG_KEY})")
-            ax.set_title(f"Heat-map | Attack = {attack_name} | Colour = {metric_label}",
-                         fontsize=12, pad=10)
+            
+            # Create and wrap title with defenders
+            title = f"Heat-map | Attack: {attack_name} | Defenders: {defenders_str_for_metric} | Colour: {metric_label}"
+            wrapped_title = "\n".join(textwrap.wrap(title, width=80))
+            ax.set_title(wrapped_title, fontsize=11, pad=10)
 
             # Save – same scheme as scatter plots
             fname = "_".join([
@@ -164,7 +206,7 @@ def plot_heatmaps_flops(plot_df, group_names_list,
 
 # --- Data Fetching and Processing (Modified to use new defender ID functions) ---
 
-def fetch_and_process_wandb_data_flops(entity, project, group_names):
+def fetch_and_process_wandb_data_flops(entity, project, group_names, probe_name_filter=""):
     api = wandb.Api()
     runs_to_process = []
     for group_name in group_names:
@@ -196,6 +238,12 @@ def fetch_and_process_wandb_data_flops(entity, project, group_names):
         
         defender_flops = config.get(Y_AXIS_CONFIG_KEY)
         attack_name = config.get(ATTACK_NAME_CONFIG_KEY, "UnknownAttack")
+        
+        # Filter by probe name if specified
+        if probe_name_filter:
+            probe_name = config.get("probe_name", "")
+            if not probe_name or probe_name_filter.lower() not in probe_name.lower():
+                continue
         
         # Use the new functions for defender IDs
         defender_grouping_id = get_full_defender_id_for_grouping(config)
@@ -321,9 +369,9 @@ def plot_results_flops(plot_df, group_names_list):
                                    constrained_layout=True) 
             
             metric_values = current_plot_df[color_metric_key]
-            if color_metric_key == "eval/avg_sr_score_attacked":
+            if color_metric_key == "eval/avg_sr_score_attacked" or color_metric_key == "eval/avg_sr_score_probe_attacked":
                 vmin_actual, vmax_actual = 0, 10; cmap = "coolwarm_r"
-            elif color_metric_key == "eval/jailbreak_rate_attacked":
+            elif color_metric_key == "eval/jailbreak_rate_attacked" or color_metric_key == "eval/jailbreak_rate_probe_attacked":
                 vmin_actual, vmax_actual = 0, 1; cmap = "viridis"
             else:
                 vmin_actual, vmax_actual = metric_values.min(), metric_values.max(); cmap = "viridis"
@@ -393,7 +441,30 @@ def plot_results_flops(plot_df, group_names_list):
             # Shorter title, and let constrained_layout handle it.
             # fig.suptitle(" | ".join(title_parts), fontsize=14) # Removed y, constrained_layout should adjust
             # Or set title on the ax directly if suptitle is problematic with constrained_layout
-            ax.set_title(" | ".join(title_parts), fontsize=12, pad=10) # Add padding to ax title
+            
+            # Add defenders to title
+            defenders_in_plot = sorted(current_plot_df['defender_legend_label'].unique())
+            
+            # Count points per defender (only counting points with valid data)
+            defender_counts = {}
+            for defender in defenders_in_plot:
+                # Count how many points this defender contributes to this particular plot
+                # Only counting points with non-zero defender flops and valid color metric
+                defender_df = current_plot_df[
+                    (current_plot_df['defender_legend_label'] == defender) & 
+                    (current_plot_df['defender_flops'] > 0) &
+                    (pd.notna(current_plot_df[color_metric_key]))
+                ]
+                defender_counts[defender] = len(defender_df)
+            
+            # Create a string with defender names and their point counts
+            defenders_with_counts = [f"{defender} ({defender_counts[defender]} pts)" for defender in defenders_in_plot]
+            defenders_str = ", ".join(defenders_with_counts)
+            
+            # Wrap long titles
+            title = f"Attack: {attack_name} | Defenders: {defenders_str} | Color: {color_metric_display_name}"
+            wrapped_title = "\n".join(textwrap.wrap(title, width=80))
+            ax.set_title(wrapped_title, fontsize=11, pad=10)
 
 
             sane_attack_name = sanitize_filename(attack_name, 30)
@@ -416,10 +487,21 @@ def plot_results_flops(plot_df, group_names_list):
 
 # --- Main Execution (ensure it calls the modified fetch function) ---
 if __name__ == "__main__":
-    wandb_entity = input(f"Enter W&B entity (or press Enter for default '{DEFAULT_WANDB_ENTITY}'): ").strip() or DEFAULT_WANDB_ENTITY
-    wandb_project = input(f"Enter W&B project (or press Enter for default '{DEFAULT_WANDB_PROJECT}'): ").strip() or DEFAULT_WANDB_PROJECT
-    group_names_str = input(f"Enter W&B group names (comma-separated) (default: '{DEFAULT_GROUP_NAMES}'): ").strip() or DEFAULT_GROUP_NAMES
-    group_names_list = [name.strip() for name in group_names_str.split(',') if name.strip()]
+    parser = argparse.ArgumentParser(description="Plot FLOP costs from W&B runs")
+    parser.add_argument("--entity", type=str, default=DEFAULT_WANDB_ENTITY,
+                        help=f"W&B entity (default: {DEFAULT_WANDB_ENTITY})")
+    parser.add_argument("--project", type=str, default=DEFAULT_WANDB_PROJECT,
+                        help=f"W&B project (default: {DEFAULT_WANDB_PROJECT})")
+    parser.add_argument("--groups", type=str, default=DEFAULT_GROUP_NAMES,
+                        help=f"Comma-separated W&B group names (default: {DEFAULT_GROUP_NAMES})")
+    parser.add_argument("--must-include-in-probe-name", type=str, default="",
+                        help="Only include defenders with this string in their probe_name")
+    args = parser.parse_args()
+    
+    wandb_entity = args.entity
+    wandb_project = args.project
+    group_names_list = [name.strip() for name in args.groups.split(',') if name.strip()]
+    probe_name_filter = args.must_include_in_probe_name
 
     if not wandb_project:
         print("W&B project is required.")
@@ -427,8 +509,10 @@ if __name__ == "__main__":
         print("No group names entered. Exiting.")
     else:
         print(f"\nFetching: entity='{wandb_entity}', project='{wandb_project}', groups={group_names_list}")
+        if probe_name_filter:
+            print(f"Filtering to defenders with probe names containing: '{probe_name_filter}'")
         
-        processed_df = fetch_and_process_wandb_data_flops(wandb_entity, wandb_project, group_names_list)
+        processed_df = fetch_and_process_wandb_data_flops(wandb_entity, wandb_project, group_names_list, probe_name_filter)
         
         if processed_df.empty:
             print("\nNo data processed. Check criteria (positive FLOPs, etc.).")

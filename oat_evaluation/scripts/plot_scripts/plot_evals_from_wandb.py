@@ -15,7 +15,7 @@ import argparse # For command line arguments
 DEFAULT_WANDB_ENTITY = "mgm52"  # e.g., "my_username" or "my_team"
 DEFAULT_WANDB_PROJECT = "oat_evaluation"
 DEFAULT_GROUP_NAMES = "20250511_043048_3142425_big_eval_repaired" #"20250510_161748,20250510_161752,20250510_161754"
-BASE_SAVE_DIR = "oat_evaluation/eval_plots"
+BASE_SAVE_DIR = "oat_evaluation/outputs/eval_plots"
 
 # Metrics to fetch and plot
 METRIC_MAP = {
