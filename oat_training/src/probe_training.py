@@ -347,9 +347,9 @@ def train_probe(
     return probes
 
 
-def initialize_lora_adapter(encoder, layers, lora_params):
+def initialize_lora_adapter(model, layers, lora_params):
     # Disable gradient computation for the encoder.model
-    for param in encoder.model.parameters():
+    for param in model.parameters():
         param.requires_grad = False
 
     # Unpack LoRA parameters
@@ -374,7 +374,7 @@ def initialize_lora_adapter(encoder, layers, lora_params):
     )
 
     # Apply LoRA adapter to the model
-    lora_model = get_peft_model(encoder.model, lora_config)
+    lora_model = get_peft_model(model, lora_config)
 
     return lora_model
 
@@ -395,9 +395,10 @@ def enable_model_gradients(lora_model):
             if "lora_" in name:
                 param.requires_grad_(True)
 
-
+from oat_evaluation.llms.autollm import AutoLLM
+from oat_evaluation.attacks.perturbation import PerturbationAttack
 def train_oat_probe_and_model(
-    encoder,
+    llm: AutoLLM,
     positive_examples,
     negative_examples,
     create_probe_fn,
@@ -431,21 +432,12 @@ def train_oat_probe_and_model(
     print(f"Checking that n_grad_accum is 0 or a multiple of n_steps... Actual values: n_grad_accum={n_grad_accum}, n_steps={n_steps}")
     assert n_grad_accum == 0 or n_steps % n_grad_accum == 0
 
-    # Get model name from encoder
-    if hasattr(encoder, 'model_name'):
-        model_name = encoder.model_name
-    elif hasattr(encoder.model, 'config'):
-        model_name = encoder.model.config._name_or_path
-    else:
-        model_name = type(encoder.model).__name__
-
     # Create checkpoint directory if specified
     if checkpoint_dir:
         os.makedirs(checkpoint_dir, exist_ok=True)
         print(f"Checkpoints will be saved to {checkpoint_dir}")
 
     # Initialize FLOP counters
-    model_size = get_model_size(encoder.model)
     total_flops = 0
     probe_training_flops = 0
     adversarial_training_flops = 0
@@ -455,7 +447,7 @@ def train_oat_probe_and_model(
         config={
             # Model metadata
             "model": {
-                "name": model_name,
+                "name": llm.name,
                 "num_layers": len(layers),
                 "layers_used": layers,
             },
@@ -500,7 +492,7 @@ def train_oat_probe_and_model(
             },
             # Add FLOP tracking configuration
             "flops_tracking": {
-                "model_size": model_size,
+                "model_size": llm.num_params,
                 "track_backward_pass": True,
             },
             # Checkpoint configuration
@@ -511,7 +503,7 @@ def train_oat_probe_and_model(
             },
         },
         tags=[
-            model_name,
+            llm.name,
             "lora" if use_lora_adapter else "no-lora",
             "probe-only" if freeze_model_during_warmup and n_steps < start_adv_training_at_step else "probe-and-model"
         ]
@@ -525,15 +517,14 @@ def train_oat_probe_and_model(
 
     # Initialize LoRA adapter
     if use_lora_adapter:
-        lora_model = initialize_lora_adapter(encoder, layers, lora_params)
-        adapter_optimizer = torch.optim.AdamW(lora_model.parameters(), lr=adapter_lr)
+        llm._model = initialize_lora_adapter(llm._model, layers, lora_params)
+        adapter_optimizer = torch.optim.AdamW(llm._model.parameters(), lr=adapter_lr)
     else:
-        lora_model = encoder.model
         adapter_optimizer = None
 
     # Tokenize and prepare input data
-    encoder.tokenizer.padding_side = "right"
-    positive_tokens = encoder.tokenizer(
+    llm._tokenizer.padding_side = "right"
+    positive_tokens = llm._tokenizer(
         positive_examples,
         padding=True,
         truncation=True,
@@ -542,7 +533,7 @@ def train_oat_probe_and_model(
     )
     positive_input_ids = positive_tokens["input_ids"]
     positive_attention_mask = positive_tokens["attention_mask"]
-    negative_tokens = encoder.tokenizer(
+    negative_tokens = llm._tokenizer(
         negative_examples,
         padding=True,
         truncation=True,
@@ -643,7 +634,7 @@ def train_oat_probe_and_model(
             "checkpoint_dir": checkpoint_dir,
             "checkpoint_every": checkpoint_every,
             "layers": layers,
-            "model_parameters": model_size,
+            "model_parameters": llm.num_params,
         }
     }
     print(f"Initializing OAT training with info: {info}")
@@ -654,7 +645,7 @@ def train_oat_probe_and_model(
 
     # Log initial model stats
     wandb.log({
-        "model/parameters": model_size,
+        "model/parameters": llm.num_params,
         "training/start_time": start_time,
     })
 
@@ -700,7 +691,7 @@ def train_oat_probe_and_model(
                         print("This is the target mask:")
                         print(
                             repr(
-                                encoder.tokenizer.decode(
+                                llm._tokenizer.decode(
                                     pos_batch_input_ids[0][pos_batch_zero_mask[0]]
                                 )
                             )
@@ -708,7 +699,7 @@ def train_oat_probe_and_model(
                         print("This is the prompt mask:")
                         print(
                             repr(
-                                encoder.tokenizer.decode(
+                                llm._tokenizer.decode(
                                     pos_batch_input_ids[0][
                                         pos_batch_only_choose_mask[0]
                                     ]
@@ -718,7 +709,7 @@ def train_oat_probe_and_model(
                         print("This is the probe mask:")
                         print(
                             repr(
-                                encoder.tokenizer.decode(
+                                llm._tokenizer.decode(
                                     pos_batch_input_ids[0][pos_batch_probe_mask[0]]
                                 )
                             )
@@ -731,7 +722,7 @@ def train_oat_probe_and_model(
                         })
 
                     # Disable model gradients
-                    disable_model_gradients(lora_model)
+                    disable_model_gradients(llm._model)
 
                     # Run this eval to benchmark the effectiveness of universal soft prompts
                     # if (
@@ -760,12 +751,33 @@ def train_oat_probe_and_model(
                     #     print("Average negative score:", results["avg_negative_score"])
 
                     # Train new attack from scratch against batch inputs
+                    # new_attack = PerturbationAttack( # TODO
+
+                    # )
+
+                    # new_attack = PerturbationAttack(
+                    #     num_epochs=9999,
+                    #     max_steps=pgd_iterations,
+                    #     epsilon=epsilon,
+                    #     learning_rate=adversary_lr, # recommended: 4e-2 or 3e-2
+                    #     batch_size=4,
+                    #     chunk_size=4,
+                    # )
+
+                    # attack_results = new_attack.run_attack(
+                    #     llm=llm,
+                    #     prompts= # list of prompts in string or embedding space
+                    #     harmful_responses= # list of harmful responses in string or embedding space
+                    #     probe_to_obfuscate= # probe to obfuscate!
+                    #     generate_final_responses= False
+                    # )
+                    
                     losses, wrappers = train_attack(
                         adv_tokens=pos_batch_input_ids,
                         prompt_mask=pos_batch_only_choose_mask,
                         target_mask=pos_batch_zero_mask,
-                        model=lora_model,
-                        tokenizer=encoder.tokenizer,
+                        model=llm._model,
+                        tokenizer=llm._tokenizer,
                         model_layers_module="base_model.model.model.layers",
                         layer=["embedding"],
                         epsilon=epsilon,
@@ -780,11 +792,11 @@ def train_oat_probe_and_model(
                     pgd_probe_loss = losses["probe"]
 
                     # Enable model gradients on the lora adapter
-                    enable_model_gradients(lora_model)
+                    enable_model_gradients(llm._model)
 
                     # Track FLOPs for adversarial training
                     pgd_tokens = pos_batch_input_ids.shape[0] * pos_batch_input_ids.shape[1] * pgd_iterations
-                    pgd_flops = calculate_backward_flops(model_size, pgd_tokens)
+                    pgd_flops = calculate_backward_flops(llm.num_params, pgd_tokens)
                     adversarial_training_flops += pgd_flops
                     total_flops += pgd_flops
                 else:
@@ -797,7 +809,7 @@ def train_oat_probe_and_model(
                 for wrapper in wrappers:
                     wrapper.enabled = True
 
-                pos_output = lora_model(
+                pos_output = llm._model(
                     input_ids=pos_batch_input_ids,
                     output_hidden_states=True,
                 )
@@ -809,7 +821,7 @@ def train_oat_probe_and_model(
                 }
                 
                 # Track forward pass FLOPs
-                forward_flops = calculate_forward_flops(model_size, pos_tokens)
+                forward_flops = calculate_forward_flops(llm.num_params, pos_tokens)
                 total_flops += forward_flops
                 if current_step < start_adv_training_at_step:
                     probe_training_flops += forward_flops
@@ -833,7 +845,7 @@ def train_oat_probe_and_model(
                     layer_losses[f"layer_{layer}_pos_loss"] = pos_layer_loss.item()
 
             # Track backward pass FLOPs for positive examples
-            backward_flops = calculate_backward_flops(model_size, pos_tokens)
+            backward_flops = calculate_backward_flops(llm.num_params, pos_tokens)
             total_flops += backward_flops
             if current_step < start_adv_training_at_step:
                 probe_training_flops += backward_flops
@@ -848,7 +860,7 @@ def train_oat_probe_and_model(
 
             # Forward pass on negative examples
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                neg_output = lora_model(
+                neg_output = llm._model(
                     input_ids=neg_batch_input_ids,
                     output_hidden_states=True,
                 )
@@ -858,7 +870,7 @@ def train_oat_probe_and_model(
                 }
                 
                 # Track forward pass FLOPs for negative examples
-                forward_flops = calculate_forward_flops(model_size, neg_tokens)
+                forward_flops = calculate_forward_flops(llm.num_params, neg_tokens)
                 total_flops += forward_flops
                 if current_step < start_adv_training_at_step:
                     probe_training_flops += forward_flops
@@ -884,7 +896,7 @@ def train_oat_probe_and_model(
             neg_loss.backward(retain_graph=True)
 
             # Track backward pass FLOPs for negative examples
-            backward_flops = calculate_backward_flops(model_size, neg_tokens)
+            backward_flops = calculate_backward_flops(llm.num_params, neg_tokens)
             total_flops += backward_flops
             if current_step < start_adv_training_at_step:
                 probe_training_flops += backward_flops
@@ -897,12 +909,12 @@ def train_oat_probe_and_model(
                 ):
                 # Compute KL divergence of logits from base model logits
                 with torch.no_grad():
-                    lora_model.disable_adapter_layers()
-                    base_neg_output = lora_model(
+                    llm._model.disable_adapter_layers()
+                    base_neg_output = llm._model(
                         input_ids=neg_batch_input_ids,
                         # attention_mask=neg_batch_attention_mask,
                     )
-                    lora_model.enable_adapter_layers()
+                    llm._model.enable_adapter_layers()
 
                 # Get logits only for masked positions
                 base_logits = base_neg_output.logits[neg_batch_zero_mask]
@@ -915,7 +927,7 @@ def train_oat_probe_and_model(
                 )
 
                 # Track FLOPs for KL divergence forwarding & backward
-                kl_flops = calculate_forward_flops(model_size, neg_tokens) + calculate_backward_flops(model_size, neg_tokens)
+                kl_flops = calculate_forward_flops(llm.num_params, neg_tokens) + calculate_backward_flops(llm.num_params, neg_tokens)
                 total_flops += kl_flops
                 if current_step < start_adv_training_at_step:
                     probe_training_flops += kl_flops
@@ -942,7 +954,7 @@ def train_oat_probe_and_model(
                 # Clip the gradients if specified
                 if clip_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(
-                        lora_model.parameters(), clip_grad_norm
+                        llm._model.parameters(), clip_grad_norm
                     )
                     all_probe_params = [
                         param
@@ -981,7 +993,7 @@ def train_oat_probe_and_model(
                 # Save LoRA model if using it
                 if use_lora_adapter:
                     model_path = os.path.join(checkpoint_dir, f"lora_model_step_{current_step}")
-                    lora_model.save_pretrained(model_path)
+                    llm._model.save_pretrained(model_path)
                     print(f"Saved model checkpoint to {model_path}")
                 
                 # Save training info
@@ -1110,7 +1122,7 @@ def train_oat_probe_and_model(
 
     # Close wandb run
     wandb.finish()
-    return probes, lora_model, info
+    return probes, llm._model, info
 
 
 def save_probes(probes, save_path):

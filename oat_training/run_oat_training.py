@@ -1,3 +1,4 @@
+from oat_evaluation.llms.autollm import AutoLLM
 from oat_evaluation.utils import load_config_and_set_vars, print_mem_usage, print_timey
 load_config_and_set_vars() # needs to be at top to take effect
 
@@ -152,18 +153,18 @@ def parse_args():
 
 
 def create_linear_probe():
-    return LinearProbe(encoder.model.config.hidden_size)
+    return LinearProbe(llm._model.config.hidden_size)
 
 
 def create_nonlinear_probe():
-    return NonlinearProbe(encoder.model.config.hidden_size, 64)
+    return NonlinearProbe(llm._model.config.hidden_size, 64)
 
 
 def get_probe_creator(probe_type: Literal["linear", "nonlinear"]):
     if probe_type == "linear":
-        return lambda: LinearProbe(encoder.model.config.hidden_size)
+        return lambda: LinearProbe(llm._model.config.hidden_size)
     else:
-        return lambda: NonlinearProbe(encoder.model.config.hidden_size, 64)
+        return lambda: NonlinearProbe(llm._model.config.hidden_size, 64)
 
 
 def sample_examples_from_datasets(
@@ -312,7 +313,7 @@ def get_token_ranges(masking_type: Literal["instruction", "generation"], model_n
 
 
 def main():
-    global encoder
+    global llm
 
     args = parse_args()
     # Allow specifying model type via argument later if needed
@@ -338,15 +339,16 @@ def main():
         raise ValueError(f"Unknown model type: {model_path_name}")
 
     # Load model and dataset
+    llm = AutoLLM(model_path)
     if model_type == "llama3":
         #encoder = EleutherSparseAutoencoder.load_llama3_sae(None, instruct=True)
-        encoder = EleutherSparseAutoencoder.load_custom_model_without_sae(model_path)
+        #encoder = EleutherSparseAutoencoder.load_custom_model_without_sae(model_path)
         jailbreaks_dataset = load_dataset(
             "Mechanistic-Anomaly-Detection/llama3-jailbreaks"
         )
     elif model_type == "gemma2":
         #encoder = DeepmindSparseAutoencoder.load_gemma2_sae(None, 11)
-        encoder = DeepmindSparseAutoencoder.load_custom_model_without_sae(model_path)
+        #encoder = DeepmindSparseAutoencoder.load_custom_model_without_sae(model_path)
         jailbreaks_dataset = load_dataset(
             "Mechanistic-Anomaly-Detection/gemma2-jailbreaks"
         )
@@ -388,7 +390,7 @@ def main():
     time_at_start_of_process = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     probes, lora_model, info = train_oat_probe_and_model(
-        encoder=encoder,
+        llm=llm,
         positive_examples=forget_examples_train,
         negative_examples=retain_examples_train,
         create_probe_fn=get_probe_creator(args.probe_type),
