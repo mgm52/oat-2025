@@ -1,4 +1,3 @@
-
 import os
 import wandb
 import yaml
@@ -85,7 +84,7 @@ def get_gpu_memory_usage(gpu_id):
 
     return sum(int(x) for x in result.split('\n'))
 
-def run_many_commands_on_gpus(commands, USE_ALL_GPUS=True, log_dir="oat_training/oat_training_logs"):
+def run_many_commands_on_gpus(commands, USE_ALL_GPUS=True, log_dir="oat_training/oat_training_logs", max_prior_mem_usage_mb=100, max_concurrent_jobs_per_gpu=1):
     """
     Run multiple training commands across available GPUs.
     If USE_ALL_GPUS is True, tasks are distributed dynamically to available GPUs.
@@ -94,6 +93,7 @@ def run_many_commands_on_gpus(commands, USE_ALL_GPUS=True, log_dir="oat_training
     Args:
         commands: List of command lists to execute (e.g., [["python", "script.py", "--arg1", "val1"], ...])
         USE_ALL_GPUS: Boolean indicating whether to use all GPUs or run sequentially on GPU 0.
+        max_concurrent_jobs_per_gpu: Maximum number of concurrent jobs per GPU (default: 1)
     """
     num_gpus = get_available_gpus()
     
@@ -139,53 +139,53 @@ def run_many_commands_on_gpus(commands, USE_ALL_GPUS=True, log_dir="oat_training
         print("No commands to run.")
         return
         
-    print(f"Dynamically distributing {total_tasks} tasks across {num_gpus} available GPUs.")
+    print(f"Dynamically distributing {total_tasks} tasks across {num_gpus} available GPUs (max {max_concurrent_jobs_per_gpu} jobs per GPU).")
     
     # Store commands as (original_index, command_list) for better tracking
     commands_queue = deque([(cmd_idx, cmd) for cmd_idx, cmd in enumerate(commands)])
-    # active_processes_on_gpus maps gpu_id to (process, log_file, original_cmd_idx, command_list)
-    active_processes_on_gpus = {}  
+    # active_processes_on_gpus maps gpu_id to list of (process, log_file, original_cmd_idx, command_list)
+    active_processes_on_gpus = {gpu_id: [] for gpu_id in range(num_gpus)}
     
     completed_task_count = 0
 
     while completed_task_count < total_tasks:
-        # Check for completed processes
-        gpus_that_finished_task = []
-        for gpu_id, (process, log_file, cmd_idx, cmd_list) in active_processes_on_gpus.items():
-            if process.poll() is not None:  # Process has finished
-                if process.returncode == 0:
-                    print(f"\nTask {cmd_idx+1}/{total_tasks} (GPU {gpu_id}, {' '.join(cmd_list)}) completed successfully.")
-                else:
-                    print(f"\nTask {cmd_idx+1}/{total_tasks} (GPU {gpu_id}, {' '.join(cmd_list)}) FAILED with code {process.returncode}.")
-                print(f"Log file: {log_file}")
-                
-                gpus_that_finished_task.append(gpu_id)
-                completed_task_count += 1
-        
-        # Remove completed processes and free up their GPUs
-        for gpu_id in gpus_that_finished_task:
-            del active_processes_on_gpus[gpu_id]
+        # Check for completed processes on all GPUs
+        for gpu_id in range(num_gpus):
+            finished_processes = []
+            for i, (process, log_file, cmd_idx, cmd_list) in enumerate(active_processes_on_gpus[gpu_id]):
+                if process.poll() is not None:  # Process has finished
+                    if process.returncode == 0:
+                        print(f"\nTask {cmd_idx+1}/{total_tasks} (GPU {gpu_id}, {' '.join(cmd_list)}) completed successfully.")
+                    else:
+                        print(f"\nTask {cmd_idx+1}/{total_tasks} (GPU {gpu_id}, {' '.join(cmd_list)}) FAILED with code {process.returncode}.")
+                    print(f"Log file: {log_file}")
+                    
+                    finished_processes.append(i)
+                    completed_task_count += 1
+            
+            # Remove completed processes (iterate in reverse to maintain indices)
+            for i in reversed(finished_processes):
+                active_processes_on_gpus[gpu_id].pop(i)
 
-        # Assign new tasks to available GPUs
-        # Loop while there are commands in the queue AND there are free GPU slots
-        while commands_queue and len(active_processes_on_gpus) < num_gpus:
-            # Find the first available GPU with low memory usage
+        # Assign new tasks to available GPU slots
+        while commands_queue:
+            # Find a GPU with available slots and low memory usage
             assigned_gpu_id = -1
-            for i in range(num_gpus):
-                if i not in active_processes_on_gpus:
-                    memory_usage = get_gpu_memory_usage(i)
-                    print(f"GPU {i} memory usage: {memory_usage} MB")
-                    if memory_usage < 100:  # Only use GPUs with less than 100MB memory usage
-                        assigned_gpu_id = i
+            for gpu_id in range(num_gpus):
+                if len(active_processes_on_gpus[gpu_id]) < max_concurrent_jobs_per_gpu:
+                    memory_usage = get_gpu_memory_usage(gpu_id)
+                    print(f"GPU {gpu_id} memory usage: {memory_usage} MB, active jobs: {len(active_processes_on_gpus[gpu_id])}/{max_concurrent_jobs_per_gpu}")
+                    if memory_usage < max_prior_mem_usage_mb:  # Only use GPUs with less than max_prior_mem_usage_mb memory usage
+                        assigned_gpu_id = gpu_id
                         break
             
-            if assigned_gpu_id != -1: # If a free GPU with low memory was found
+            if assigned_gpu_id != -1: # If a GPU with available slots and low memory was found
                 cmd_idx, cmd_to_run = commands_queue.popleft()
-                print(f"\nAssigning task {cmd_idx+1}/{total_tasks} to GPU {assigned_gpu_id}.")
+                print(f"\nAssigning task {cmd_idx+1}/{total_tasks} to GPU {assigned_gpu_id} (slot {len(active_processes_on_gpus[assigned_gpu_id])+1}/{max_concurrent_jobs_per_gpu}).")
                 process, log_file = run_command_on_gpu(assigned_gpu_id, cmd_to_run, log_dir)
-                active_processes_on_gpus[assigned_gpu_id] = (process, log_file, cmd_idx, cmd_to_run)
+                active_processes_on_gpus[assigned_gpu_id].append((process, log_file, cmd_idx, cmd_to_run))
             else:
-                # No free GPU slot with low memory found
+                # No GPU slot with low memory found
                 break # Break from assigning more tasks in this cycle
         
         if completed_task_count == total_tasks:

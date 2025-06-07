@@ -8,6 +8,7 @@ from oat_evaluation.llms.autollm import AutoLLM
 from oat_evaluation.llms.llm import LLMResponses
 from oat_evaluation.probes.probe import Probe
 from oat_evaluation.utils import calculate_forward_flops
+import logging, sys
 
 
 class FLRTAttack(Attack):
@@ -124,6 +125,12 @@ class FLRTAttack(Attack):
             all_attacked_prompts_for_final_response.append(prompt_with_suffix)
 
         def _flrt_attack_fn(input_prompts: List[str]) -> List[str]:
+            for prompt in input_prompts:
+                if prompt in input_prompts:
+                    print(f"Applying FLRT attack to prompt: {prompt}")
+                    print(f"The prompt is now: {prompt_to_attacked_prompt_map[prompt]}")
+                else:
+                    print(f"WARNING: Prompt {prompt} not found in prompt_to_attacked_prompt_map")
             return [prompt_to_attacked_prompt_map.get(p, p) for p in input_prompts]
 
         final_attack_details = AttackDetails(
